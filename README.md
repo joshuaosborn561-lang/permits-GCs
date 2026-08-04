@@ -24,7 +24,7 @@ The UI requires an **explicit confirm** after showing a cost estimate. Ambiguous
 - Node.js + Express + TypeScript
 - React (Vite) single-page UI
 - Apify actors via `apify-client`
-- OpenAI structured JSON (`gpt-4.1-nano` by default)
+- OpenAI structured JSON (`gpt-5-nano` by default — cheapest tier)
 - Supabase Postgres schema `property_pm_finder`
 - Railway (Dockerfile + nixpacks)
 
@@ -35,7 +35,7 @@ Copy `.env.example` → `.env` (or set in Railway):
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `OPENAI_API_KEY` | for live AI | Nano-tier model |
-| `OPENAI_MODEL` | no | Default `gpt-4.1-nano` |
+| `OPENAI_MODEL` | no | Default `gpt-5-nano` (cheapest) |
 | `APIFY_TOKEN` | for live scrapes | [Apify Console → Integrations](https://console.apify.com/settings/integrations) |
 | `SUPABASE_URL` | for persistence | Same as google-maps-scraper service |
 | `SUPABASE_ANON_KEY` | for persistence | Same as google-maps-scraper service |
