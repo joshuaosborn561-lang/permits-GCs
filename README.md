@@ -1,0 +1,144 @@
+# SalesGlider · Property PM Finder
+
+Internal pipeline + web UI that turns a natural-language request like **"get me all commercial property owners in Fort Worth, TX"** into a deduplicated, contact-level CSV of commercial owners, property managers, and decision-maker contacts.
+
+Built for SalesGlider Growth outbound. Data lands in a dedicated Supabase schema (`property_pm_finder`) and exports at the **contact level** for Smartlead later.
+
+## What it does
+
+1. **Parse** free text → structured location params (OpenAI nano)
+2. **Propwire** pull (Apify `solidcode/propwire-com-scraper`) — commercial, full detail
+3. **c/o parse** — resolve PM from mailing address when present (high confidence; skips paid fallbacks)
+4. **LoopNet** fallback (Apify `memo23/loopnet-scraper-ppe`) — medium confidence
+5. **Google search** fallback (Apify `apify/google-search-scraper`) — low confidence, hard-capped at 5000
+6. **Contact enrichment waterfall** (company-deduped + persistent cache):
+   - getleads.io ($0 marginal on unlimited)
+   - AI Ark
+   - LeadMagic role finder
+   - Google/LinkedIn soft signal
+
+The UI requires an **explicit confirm** after showing a cost estimate. Ambiguous locations (e.g. city without state) must be disambiguated first.
+
+## Stack
+
+- Node.js + Express + TypeScript
+- React (Vite) single-page UI
+- Apify actors via `apify-client`
+- OpenAI structured JSON (`gpt-4.1-nano` by default)
+- Supabase Postgres schema `property_pm_finder`
+- Railway (Dockerfile + nixpacks)
+
+## Environment variables
+
+Copy `.env.example` → `.env` (or set in Railway):
+
+| Variable | Required | Notes |
+|----------|----------|-------|
+| `OPENAI_API_KEY` | for live AI | Nano-tier model |
+| `OPENAI_MODEL` | no | Default `gpt-4.1-nano` |
+| `APIFY_TOKEN` | for live scrapes | [Apify Console → Integrations](https://console.apify.com/settings/integrations) |
+| `SUPABASE_URL` | for persistence | `https://azpapwtnrbzywlnxxecz.supabase.co` |
+| `SUPABASE_SERVICE_ROLE_KEY` | for persistence | Service role (server only — never expose to browser) |
+| `GETLEADS_API_KEY` | for contacts | Unlimited plan → $0 in cost tracker |
+| `GETLEADS_BASE_URL` | no | Default `https://api.getleads.io` |
+| `AI_ARK_API_KEY` | optional waterfall | ~$0.0015/people search estimate |
+| `AI_ARK_BASE_URL` | no | Default `https://api.ai-ark.com` |
+| `LEADMAGIC_API_KEY` | optional waterfall | Role finder ~2 credits ≈ $0.05/match estimate |
+| `DEMO_MODE` | no | `true` = synthetic data, no paid calls |
+| `LOOPNET_FALLOUT_PCT` | no | Default `0.50` for cost estimates |
+| `GOOGLE_SEARCH_HARD_CAP` | no | Default `5000` |
+| `PORT` | no | Default `8080` |
+
+### Adding keys on Railway
+
+1. Open the Railway project → service → **Variables**
+2. Add `APIFY_TOKEN`, `OPENAI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and enrichment keys
+3. Redeploy
+
+### Local `.env`
+
+```bash
+cp .env.example .env
+# edit keys
+DEMO_MODE=true npm run dev   # UI smoke test without spending
+```
+
+## Supabase schema
+
+Schema SQL lives in [`supabase/schema.sql`](supabase/schema.sql). It was applied to the **campaignintelligence** project under schema **`property_pm_finder`**:
+
+- `runs` — job metadata, status, cost
+- `properties` — owner/PM resolution + raw actor payloads
+- `contacts` — decision makers per property
+- `pm_company_contact_cache` — cross-run company→contact cache
+- `openai_debug_logs` — raw LLM I/O for prompt tuning
+
+RLS is enabled; the app uses the **service role** key. Existing `public.*` tables are untouched.
+
+**One dashboard step required:** In Supabase → Project Settings → API → **Exposed schemas**, add `property_pm_finder` (in addition to `public`). Without this, `supabase-js` cannot read/write the custom schema via PostgREST.
+
+## Local development
+
+```bash
+npm install
+DEMO_MODE=true npm run dev
+# API http://localhost:8080  ·  Vite http://localhost:5173 (proxies /api)
+```
+
+Production-style:
+
+```bash
+npm run build
+DEMO_MODE=true npm start
+```
+
+## Small sample test run (recommended before 5000+)
+
+1. Set `DEMO_MODE=false` and real `APIFY_TOKEN` + `OPENAI_API_KEY` (+ Supabase service role)
+2. Open the UI
+3. Enter: `Get me all commercial property owners in Fort Worth, TX`
+4. Set **Sample size override** to `100` (or `25`)
+5. Click **Parse & estimate** → review cost band → resolve ambiguity if shown
+6. Click **Confirm & run pipeline**
+7. Watch live counters; export CSV when complete
+8. In Supabase, inspect `property_pm_finder.runs`, `.properties`, `.contacts`, `.openai_debug_logs`
+
+Demo path (no spend):
+
+```bash
+DEMO_MODE=true npm start
+# same UI flow — uses synthetic Propwire/LoopNet/Google/getleads data
+```
+
+## Cost model (estimates)
+
+| Step | Unit estimate |
+|------|----------------|
+| Propwire full detail | $0.00155 / record |
+| OpenAI nano parse | ~$0.001 / record |
+| LoopNet | $0.0015 / record × fallout % |
+| Google PM search | $0.0025 / query (cap 5000) |
+| getleads | $0 |
+| AI Ark people search | ~$0.0015 / lookup |
+| LeadMagic role finder | ~$0.05 / successful match |
+
+Apify platform minimums and OpenAI usage are billed by those platforms separately — UI numbers are estimates, not invoices.
+
+## API sketch
+
+- `POST /api/runs/parse` `{ query }` → parsed params + estimate + run id
+- `POST /api/runs/:id/resolve-location` `{ location_value }`
+- `POST /api/runs/:id/confirm` `{ max_records? }` → starts background job
+- `GET /api/runs/:id` → live status / cost
+- `GET /api/runs/:id/results` → contact-level rows
+- `GET /api/runs/:id/export.csv`
+
+## Deploy (Railway)
+
+```bash
+railway up -y
+railway variables set OPENAI_API_KEY=... APIFY_TOKEN=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+railway domain
+```
+
+Or connect the GitHub repo in the Railway dashboard and set the same variables.
