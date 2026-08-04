@@ -37,8 +37,9 @@ Copy `.env.example` → `.env` (or set in Railway):
 | `OPENAI_API_KEY` | for live AI | Nano-tier model |
 | `OPENAI_MODEL` | no | Default `gpt-4.1-nano` |
 | `APIFY_TOKEN` | for live scrapes | [Apify Console → Integrations](https://console.apify.com/settings/integrations) |
-| `SUPABASE_URL` | for persistence | `https://kemvxzhcxvynmoutwdrh.supabase.co` (google-maps-scraper-leads) |
-| `SUPABASE_SERVICE_ROLE_KEY` | for persistence | Service role for that project (server only) |
+| `SUPABASE_URL` | for persistence | Same as google-maps-scraper service |
+| `SUPABASE_ANON_KEY` | for persistence | Same as google-maps-scraper service |
+| `SUPABASE_INGEST_SECRET` | for persistence | Same as google-maps-scraper service (RPC auth) |
 | `GETLEADS_API_KEY` | for contacts | Unlimited plan → $0 in cost tracker |
 | `GETLEADS_BASE_URL` | no | Default `https://api.getleads.io` |
 | `AI_ARK_API_KEY` | optional waterfall | ~$0.0015/people search estimate |
@@ -78,9 +79,9 @@ On every completed run, contacts are **also mirrored** into the existing Maps-sc
 - `public.scrape_jobs` — one row per PM-finder run (`id = pmf-<run_uuid>`, tags include `property_pm_finder`)
 - `public.scrape_leads` — one row per decision-maker contact (name/email/phone/city/state + PM company in `category`, full payload in `raw`)
 
-RLS is enabled on the new schema; the app uses the **service role** key. Existing Maps scrape tables are only appended to (never altered).
+Writes use the same **anon key + ingest-secret RPC** pattern as the Maps scraper (`ingest_scrape_job` / `ingest_scrape_leads`, plus `ingest_pmf_*` RPCs for the dedicated schema). Existing Maps scrape table definitions are not altered.
 
-**One dashboard step required:** In Supabase → Project Settings → API → **Exposed schemas**, add `property_pm_finder` (in addition to `public`). Without this, `supabase-js` cannot read/write the custom schema via PostgREST.
+Borrow credentials from the Railway project **google maps scraper** → service `google-maps-scraper` → variables `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_INGEST_SECRET`.
 
 ## Local development
 
@@ -142,8 +143,10 @@ Apify platform minimums and OpenAI usage are billed by those platforms separatel
 
 ```bash
 railway up -y
-railway variables set OPENAI_API_KEY=... APIFY_TOKEN=... SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+railway variables set OPENAI_API_KEY=... APIFY_TOKEN=... \
+  SUPABASE_URL=... SUPABASE_ANON_KEY=... SUPABASE_INGEST_SECRET=...
 railway domain
 ```
+
 
 Or connect the GitHub repo in the Railway dashboard and set the same variables.

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { COST, TARGET_TITLES, config, isLargePmFirm } from '../config.js';
-import { getSupabase, hasSupabase } from '../lib/supabase.js';
+import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
 import { searchContactsViaGoogle } from './googleSearch.js';
 import type { ContactRecord, ContactSource } from '../types.js';
 
@@ -31,29 +31,28 @@ function companyKey(name: string): string {
 
 export async function lookupContactCache(company: string): Promise<CachedContact | null> {
   if (!hasSupabase()) return null;
-  const sb = getSupabase();
-  const { data, error } = await sb
-    .from('pm_company_contact_cache')
-    .select('*')
-    .eq('company_key', companyKey(company))
-    .maybeSingle();
-  if (error || !data) return null;
+  const { data, error } = await getSupabase().rpc('get_pmf_contact_cache', {
+    p_secret: ingestSecret(),
+    p_company_key: companyKey(company),
+  });
+  if (error || !data || data === null) return null;
+  const row = data as Record<string, unknown>;
   return {
-    property_manager_company: data.property_manager_company,
-    contact_name: data.contact_name,
-    contact_title: data.contact_title,
-    contact_email: data.contact_email,
-    contact_phone: data.contact_phone,
+    property_manager_company: String(row.property_manager_company ?? company),
+    contact_name: (row.contact_name as string) ?? null,
+    contact_title: (row.contact_title as string) ?? null,
+    contact_email: (row.contact_email as string) ?? null,
+    contact_phone: (row.contact_phone as string) ?? null,
     source: 'cache',
-    match_confidence: data.match_confidence,
+    match_confidence: (row.match_confidence as string) ?? null,
   };
 }
 
 export async function upsertContactCache(contact: CachedContact): Promise<void> {
   if (!hasSupabase() || !contact.contact_name) return;
-  const sb = getSupabase();
-  await sb.from('pm_company_contact_cache').upsert(
-    {
+  const { error } = await getSupabase().rpc('upsert_pmf_contact_cache', {
+    p_secret: ingestSecret(),
+    p_row: {
       property_manager_company: contact.property_manager_company,
       company_key: companyKey(contact.property_manager_company),
       contact_name: contact.contact_name,
@@ -64,8 +63,8 @@ export async function upsertContactCache(contact: CachedContact): Promise<void> 
       match_confidence: contact.match_confidence,
       resolved_at: new Date().toISOString(),
     },
-    { onConflict: 'company_key' },
-  );
+  });
+  if (error) console.warn('[supabase] upsert_pmf_contact_cache', error.message);
 }
 
 export async function enrichPmCompany(opts: {

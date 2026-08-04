@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { getSupabase, hasSupabase } from '../lib/supabase.js';
+import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
 import {
   emptyProgress,
   type ContactRecord,
@@ -101,22 +101,25 @@ export function publicRunView(job: RunJob) {
 async function persistRun(job: RunJob): Promise<void> {
   if (!hasSupabase()) return;
   try {
-    const sb = getSupabase();
-    await sb.from('runs').upsert({
-      id: job.id,
-      created_at: job.created_at,
-      updated_at: job.updated_at,
-      natural_language_query: job.natural_language_query,
-      parsed_params: job.parsed_params,
-      status: job.status,
-      current_step: job.current_step,
-      progress: job.progress,
-      total_records: job.total_records,
-      total_cost_estimate: job.total_cost_estimate,
-      total_cost_actual: job.total_cost_actual,
-      cost_breakdown: job.cost_breakdown,
-      error_message: job.error_message,
+    const { error } = await getSupabase().rpc('ingest_pmf_run', {
+      p_secret: ingestSecret(),
+      p_run: {
+        id: job.id,
+        created_at: job.created_at,
+        updated_at: job.updated_at,
+        natural_language_query: job.natural_language_query,
+        parsed_params: job.parsed_params,
+        status: job.status,
+        current_step: job.current_step,
+        progress: job.progress,
+        total_records: job.total_records,
+        total_cost_estimate: job.total_cost_estimate,
+        total_cost_actual: job.total_cost_actual,
+        cost_breakdown: job.cost_breakdown,
+        error_message: job.error_message,
+      },
     });
+    if (error) console.warn('[supabase] ingest_pmf_run', error.message);
   } catch (err) {
     console.warn('[supabase] persist run failed', err);
   }
@@ -125,7 +128,6 @@ async function persistRun(job: RunJob): Promise<void> {
 export async function persistProperties(runId: string, properties: PropertyRecord[]): Promise<void> {
   if (!hasSupabase() || !properties.length) return;
   try {
-    const sb = getSupabase();
     const rows = properties.map((p) => ({
       id: p.id,
       run_id: runId,
@@ -150,11 +152,13 @@ export async function persistProperties(runId: string, properties: PropertyRecor
       raw_google_data: p.raw_google_data ?? null,
     }));
 
-    // Upsert in chunks
     for (let i = 0; i < rows.length; i += 100) {
       const chunk = rows.slice(i, i + 100);
-      const { error } = await sb.from('properties').upsert(chunk);
-      if (error) console.warn('[supabase] properties upsert', error.message);
+      const { error } = await getSupabase().rpc('ingest_pmf_properties', {
+        p_secret: ingestSecret(),
+        p_rows: chunk,
+      });
+      if (error) console.warn('[supabase] ingest_pmf_properties', error.message);
     }
   } catch (err) {
     console.warn('[supabase] persist properties failed', err);
@@ -164,11 +168,13 @@ export async function persistProperties(runId: string, properties: PropertyRecor
 export async function persistContacts(contacts: ContactRecord[]): Promise<void> {
   if (!hasSupabase() || !contacts.length) return;
   try {
-    const sb = getSupabase();
     for (let i = 0; i < contacts.length; i += 100) {
       const chunk = contacts.slice(i, i + 100);
-      const { error } = await sb.from('contacts').upsert(chunk);
-      if (error) console.warn('[supabase] contacts upsert', error.message);
+      const { error } = await getSupabase().rpc('ingest_pmf_contacts', {
+        p_secret: ingestSecret(),
+        p_rows: chunk,
+      });
+      if (error) console.warn('[supabase] ingest_pmf_contacts', error.message);
     }
   } catch (err) {
     console.warn('[supabase] persist contacts failed', err);

@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
-import { getSupabase, hasSupabase } from './supabase.js';
+import { getSupabase, hasSupabase, ingestSecret } from './supabase.js';
 
 let client: OpenAI | null = null;
 
@@ -66,15 +66,18 @@ export async function logOpenAiCall(opts: {
 }): Promise<void> {
   if (!hasSupabase() || !opts.runId) return;
   try {
-    const sb = getSupabase();
-    await sb.from('openai_debug_logs').insert({
-      run_id: opts.runId,
-      property_id: opts.propertyId ?? null,
-      step: opts.step,
-      model: config.openaiModel,
-      raw_input: opts.rawInput.slice(0, 20000),
-      raw_output: opts.rawOutput.slice(0, 20000),
+    const { error } = await getSupabase().rpc('log_pmf_openai', {
+      p_secret: ingestSecret(),
+      p_row: {
+        run_id: opts.runId,
+        property_id: opts.propertyId ?? null,
+        step: opts.step,
+        model: config.openaiModel,
+        raw_input: opts.rawInput.slice(0, 20000),
+        raw_output: opts.rawOutput.slice(0, 20000),
+      },
     });
+    if (error) console.warn('[openai] log_pmf_openai', error.message);
   } catch (err) {
     console.warn('[openai] failed to persist debug log', err);
   }

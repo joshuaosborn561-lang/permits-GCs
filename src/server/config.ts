@@ -23,7 +23,11 @@ export const config = {
 
   apifyToken: process.env.APIFY_TOKEN ?? '',
 
+  // Borrowed from google-maps-scraper Railway service
   supabaseUrl: process.env.SUPABASE_URL ?? '',
+  supabaseAnonKey: process.env.SUPABASE_ANON_KEY ?? '',
+  supabaseIngestSecret: process.env.SUPABASE_INGEST_SECRET ?? '',
+  /** Optional override; Maps scraper does not use this. */
   supabaseServiceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
 
   getleadsApiKey: process.env.GETLEADS_API_KEY ?? '',
