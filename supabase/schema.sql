@@ -1,5 +1,7 @@
 -- Property PM Finder schema for SalesGlider Growth
--- Applied to campaignintelligence project. Does not modify existing public tables.
+-- Applied to google-maps-scraper-leads project (kemvxzhcxvynmoutwdrh).
+-- Does not modify existing public.scrape_* table definitions; the app also
+-- mirrors completed contacts into public.scrape_jobs / public.scrape_leads.
 
 CREATE SCHEMA IF NOT EXISTS property_pm_finder;
 

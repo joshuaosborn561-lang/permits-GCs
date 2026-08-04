@@ -336,6 +336,7 @@ export default function App() {
             <Stat label="via AI Ark" value={p.contacts_from_ai_ark} />
             <Stat label="via LeadMagic" value={p.contacts_from_leadmagic} />
             <Stat label="via cache" value={p.contacts_from_cache} />
+            <Stat label="Synced → scrape_leads" value={p.contacts_synced_to_scrape_leads} />
             <Stat label="Failed step 1" value={p.failed_step_1} />
           </div>
         </section>

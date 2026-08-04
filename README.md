@@ -37,8 +37,8 @@ Copy `.env.example` → `.env` (or set in Railway):
 | `OPENAI_API_KEY` | for live AI | Nano-tier model |
 | `OPENAI_MODEL` | no | Default `gpt-4.1-nano` |
 | `APIFY_TOKEN` | for live scrapes | [Apify Console → Integrations](https://console.apify.com/settings/integrations) |
-| `SUPABASE_URL` | for persistence | `https://azpapwtnrbzywlnxxecz.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | for persistence | Service role (server only — never expose to browser) |
+| `SUPABASE_URL` | for persistence | `https://kemvxzhcxvynmoutwdrh.supabase.co` (google-maps-scraper-leads) |
+| `SUPABASE_SERVICE_ROLE_KEY` | for persistence | Service role for that project (server only) |
 | `GETLEADS_API_KEY` | for contacts | Unlimited plan → $0 in cost tracker |
 | `GETLEADS_BASE_URL` | no | Default `https://api.getleads.io` |
 | `AI_ARK_API_KEY` | optional waterfall | ~$0.0015/people search estimate |
@@ -65,7 +65,7 @@ DEMO_MODE=true npm run dev   # UI smoke test without spending
 
 ## Supabase schema
 
-Schema SQL lives in [`supabase/schema.sql`](supabase/schema.sql). It was applied to the **campaignintelligence** project under schema **`property_pm_finder`**:
+Schema SQL lives in [`supabase/schema.sql`](supabase/schema.sql). It is applied on the **google-maps-scraper-leads** project (`kemvxzhcxvynmoutwdrh`) under schema **`property_pm_finder`**:
 
 - `runs` — job metadata, status, cost
 - `properties` — owner/PM resolution + raw actor payloads
@@ -73,7 +73,12 @@ Schema SQL lives in [`supabase/schema.sql`](supabase/schema.sql). It was applied
 - `pm_company_contact_cache` — cross-run company→contact cache
 - `openai_debug_logs` — raw LLM I/O for prompt tuning
 
-RLS is enabled; the app uses the **service role** key. Existing `public.*` tables are untouched.
+On every completed run, contacts are **also mirrored** into the existing Maps-scraper tables:
+
+- `public.scrape_jobs` — one row per PM-finder run (`id = pmf-<run_uuid>`, tags include `property_pm_finder`)
+- `public.scrape_leads` — one row per decision-maker contact (name/email/phone/city/state + PM company in `category`, full payload in `raw`)
+
+RLS is enabled on the new schema; the app uses the **service role** key. Existing Maps scrape tables are only appended to (never altered).
 
 **One dashboard step required:** In Supabase → Project Settings → API → **Exposed schemas**, add `property_pm_finder` (in addition to `public`). Without this, `supabase-js` cannot read/write the custom schema via PostgREST.
 

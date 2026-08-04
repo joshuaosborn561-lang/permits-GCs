@@ -12,6 +12,7 @@ import { resolveViaLoopnet } from '../services/loopnet.js';
 import { isNameVariant, parseOwnerMailing } from '../services/ownerParse.js';
 import { pullPropwire } from '../services/propwire.js';
 import type { PropertyRecord, RunProgress } from '../types.js';
+import { syncContactsToScrapeLeads } from '../services/scrapeLeadsSync.js';
 import {
   getRun,
   persistContacts,
@@ -245,6 +246,12 @@ async function runPipeline(runId: string): Promise<void> {
   updateProgress(runId, progress, breakdown, properties);
   await persistProperties(runId, properties);
   await persistContacts(contacts);
+
+  // Also dump into public.scrape_leads on the Google Maps leads project
+  updateRun(runId, { current_step: 'sync_scrape_leads' });
+  const synced = await syncContactsToScrapeLeads(getRun(runId)!);
+  progress.contacts_synced_to_scrape_leads = synced;
+  updateProgress(runId, progress, breakdown, properties);
 }
 
 function bumpCost(progress: RunProgress, breakdown: Record<string, number>) {

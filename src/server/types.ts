@@ -56,6 +56,7 @@ export interface RunProgress {
   contacts_from_leadmagic: number;
   contacts_from_google: number;
   contacts_from_cache: number;
+  contacts_synced_to_scrape_leads: number;
   companies_enriched: number;
   cost_actual: number;
   cost_breakdown: Record<string, number>;
@@ -144,6 +145,7 @@ export function emptyProgress(): RunProgress {
     contacts_from_leadmagic: 0,
     contacts_from_google: 0,
     contacts_from_cache: 0,
+    contacts_synced_to_scrape_leads: 0,
     companies_enriched: 0,
     cost_actual: 0,
     cost_breakdown: {},
