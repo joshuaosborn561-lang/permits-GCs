@@ -19,7 +19,7 @@ export const config = {
   demoMode: bool('DEMO_MODE', false),
 
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
-  openaiModel: process.env.OPENAI_MODEL ?? 'gpt-4.1-nano',
+  openaiModel: process.env.OPENAI_MODEL ?? 'gpt-5-nano',
 
   apifyToken: process.env.APIFY_TOKEN ?? '',
 
