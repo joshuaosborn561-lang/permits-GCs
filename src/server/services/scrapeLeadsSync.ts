@@ -22,7 +22,8 @@ export async function syncContactsToScrapeLeads(job: RunJob): Promise<number> {
       id: scrapeJobId,
       prompt: job.natural_language_query,
       tags,
-      status: job.status === 'completed' ? 'completed' : job.status,
+      // Sync runs at end of a successful pipeline, before outer status flip.
+      status: 'completed',
       estimate: {
         total: job.total_cost_actual || job.total_cost_estimate || 0,
         mapsCost: 0,
