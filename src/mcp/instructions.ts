@@ -10,11 +10,17 @@ Natural language market request → commercial properties → owner of record �
 ## Decision tree: should I use this MCP?
 
 USE THIS MCP when the user wants any of:
-- Commercial property owners / landlords / building owners in a US city, county, or radius
+- Commercial property owners / landlords / building owners in a US city, county, radius, or ZIP list
 - Property management companies (PMs) tied to those commercial properties
 - Decision makers at those PM firms (Property Manager, Regional Manager, Director/VP Ops, etc.)
 - An outreach list / CSV of those contacts for cold outbound (Smartlead later)
 - Status, cost, or results of a PM-finder run already started here
+
+Geography rules:
+- Optional \`zips\` (comma-separated) on \`pmf_parse_query\` / \`pmf_estimate_cost\` wins outright and is persisted for \`pmf_confirm_run\`.
+- "Within N miles of X" → \`center\` + \`radius_miles\`; ZIP footprint is resolved via haversine on \`data/us_zipcodes.csv\`. Keep states to the center's state (DFW radius → TX only, not OK).
+- \`exclude_categories\` honors "do not include …" phrasing in the brief.
+- CSV export includes \`latitude\` / \`longitude\`; optional center+radius_miles filters post-hoc.
 
 Do NOT use this MCP when the user wants:
 - Google Maps / local-business / restaurant / contractor leads (different product: google-maps-scraper)

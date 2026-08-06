@@ -1,4 +1,4 @@
-export type LocationType = 'city' | 'radius' | 'county';
+export type LocationType = 'city' | 'radius' | 'county' | 'zips';
 export type OwnerType = 'individual' | 'company' | 'trust' | 'unknown';
 export type PmConfidence = 'high' | 'medium' | 'low' | 'unresolved';
 export type PmSource =
@@ -27,6 +27,23 @@ export interface ParsedQueryParams {
   ambiguous?: boolean;
   ambiguity_options?: string[];
   ambiguity_reason?: string | null;
+  /** Explicit ZIP list — wins over center/radius and city/county. */
+  zips?: string[];
+  /** Raw CSV input before resolution (optional). */
+  zips_csv?: string | null;
+  /** Human center label, e.g. "Dallas, TX" or "32.7767,-97.0000". */
+  center?: string | null;
+  center_lat?: number | null;
+  center_lng?: number | null;
+  /** Resolved state codes for the market (e.g. ["TX"]). */
+  states?: string[];
+  /** Resolved ZIP count after geography resolution. */
+  zip_count?: number;
+  /**
+   * Categories / niches to exclude (e.g. "roofing contractor").
+   * Applied when filtering scraped/enriched results that mention them.
+   */
+  exclude_categories?: string[];
 }
 
 export interface CostEstimate {
@@ -127,6 +144,8 @@ export interface ContactExportRow {
   city: string | null;
   state: string | null;
   zip: string | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export function emptyProgress(): RunProgress {

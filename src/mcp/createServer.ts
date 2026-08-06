@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { config } from '../server/config.js';
 import { estimateCost } from '../server/lib/costs.js';
 import { hasSupabase } from '../server/lib/supabase.js';
+import { haversineMiles } from '../server/lib/zips.js';
 import {
   createRun,
   getRun,
@@ -11,7 +12,7 @@ import {
   updateRun,
 } from '../server/pipeline/jobStore.js';
 import { startPipeline } from '../server/pipeline/runner.js';
-import { parseNaturalLanguageQuery } from '../server/services/parseQuery.js';
+import { planMarket } from '../server/services/planMarket.js';
 import type { ContactExportRow, ParsedQueryParams } from '../server/types.js';
 import {
   GUIDE_MARKDOWN,
@@ -77,6 +78,8 @@ function buildExportRows(runId: string): ContactExportRow[] {
         city: p?.city ?? null,
         state: p?.state ?? null,
         zip: p?.zip ?? null,
+        latitude: p?.latitude ?? null,
+        longitude: p?.longitude ?? null,
       };
     });
   }
@@ -97,7 +100,24 @@ function buildExportRows(runId: string): ContactExportRow[] {
     city: p.city,
     state: p.state,
     zip: p.zip,
+    latitude: p.latitude,
+    longitude: p.longitude,
   }));
+}
+
+function filterExportRows(
+  rows: ContactExportRow[],
+  opts: { center?: string; radius_miles?: number },
+): ContactExportRow[] {
+  if (!opts.center || !opts.radius_miles) return rows;
+  const coord = opts.center.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!coord) return rows;
+  const lat = Number(coord[1]);
+  const lng = Number(coord[2]);
+  return rows.filter((r) => {
+    if (r.latitude == null || r.longitude == null) return false;
+    return haversineMiles(lat, lng, r.latitude, r.longitude) <= opts.radius_miles!;
+  });
 }
 
 function toCsv(rows: ContactExportRow[]): string {
@@ -118,9 +138,11 @@ function toCsv(rows: ContactExportRow[]): string {
     'city',
     'state',
     'zip',
+    'latitude',
+    'longitude',
   ];
-  const esc = (v: string | null | undefined) => {
-    const s = v ?? '';
+  const esc = (v: string | number | null | undefined) => {
+    const s = v == null ? '' : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return [headers.join(','), ...rows.map((r) => headers.map((h) => esc(r[h])).join(','))].join(
@@ -201,35 +223,73 @@ NEXT: If ready, call pmf_parse_query. If demoMode=true, warn the user that resul
     'pmf_parse_query',
     {
       title: 'Parse natural language query',
-      description: `WHEN TO USE: User asks for commercial property owners / PMs / landlords in a US market (city, county, or miles-from-city).
-WHAT IT DOES: Parses free text into location params + cost estimate and creates a run in awaiting_confirmation. Does NOT spend money and does NOT start scraping.
-WHEN NOT TO USE: User only wants a cost what-if with already-known structured params → use pmf_estimate_cost instead. User wants Maps restaurant/local business leads → wrong tool.
-IMPORTANT: If response.ambiguous=true, do not confirm — ask the user to pick from ambiguity_options, then call pmf_resolve_location.
-NEXT: Show estimate to the user. Wait for explicit approval before pmf_confirm_run.`,
+      description: `WHEN TO USE: User asks for commercial property owners / PMs / landlords in a US market (city, county, miles-from-city, or explicit ZIP list).
+WHAT IT DOES: Parses free text into location params + cost estimate and creates a run in awaiting_confirmation. Resolves radius briefs to a ZIP footprint (does not widen to whole neighboring states). Does NOT spend money.
+OVERRIDES: optional zips (comma-separated, wins outright), center + radius_miles, exclude_categories.
+WHEN NOT TO USE: Maps restaurant/local business leads → wrong product.
+IMPORTANT: If response.ambiguous=true, ask the user to pick from ambiguity_options, then pmf_resolve_location.
+NEXT: Show estimate (include zip_count when present). Wait for explicit approval before pmf_confirm_run.`,
       inputSchema: {
         query: z
           .string()
           .min(1)
           .describe(
-            'Natural language market request, e.g. "Get me all commercial property owners in Fort Worth, TX" or "commercial properties within 50 miles of Dallas, TX — 100 records"',
+            'Natural language market request, e.g. "commercial properties within 150 miles of Dallas, TX" or "commercial property owners in Fort Worth, TX — 100 records"',
           ),
+        zips: z
+          .string()
+          .optional()
+          .describe(
+            'Optional comma-separated 5-digit ZIPs. When set, wins over center/radius/city. Supports 1000+ ZIPs.',
+          ),
+        center: z
+          .string()
+          .optional()
+          .describe('Optional center override, e.g. "Dallas, TX" or "32.7767,-97.0000"'),
+        radius_miles: z
+          .number()
+          .positive()
+          .optional()
+          .describe('Optional radius in miles around center (or around the brief center)'),
+        exclude_categories: z
+          .string()
+          .optional()
+          .describe(
+            'Comma-separated niches to exclude, e.g. "roofing contractor". Also extracted from "do not include …" in the brief.',
+          ),
+        max_records: z.number().int().min(1).max(50000).optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ query }) => {
+    async ({ query, zips, center, radius_miles, exclude_categories, max_records }) => {
       try {
-        const parsed = await parseNaturalLanguageQuery(query);
-        const estimate = estimateCost(parsed);
-        const run = createRun({ query, params: parsed, estimate });
+        const planned = await planMarket({
+          query,
+          zips,
+          center,
+          radius_miles,
+          exclude_categories,
+          max_records,
+        });
+        const run = createRun({
+          query,
+          params: planned.parsed,
+          estimate: planned.estimate,
+        });
         return jsonResult({
           run: publicRunView(run),
-          parsed,
-          estimate,
+          parsed: planned.parsed,
+          estimate: planned.estimate,
+          zip_count: planned.zip_count,
+          states: planned.states,
+          center: planned.center,
+          radius_miles: planned.radius_miles,
+          geo_mode: planned.mode,
           needs_confirmation: true,
-          ambiguous: Boolean(parsed.ambiguous),
-          assistant_instructions: parsed.ambiguous
+          ambiguous: Boolean(planned.parsed.ambiguous),
+          assistant_instructions: planned.parsed.ambiguous
             ? 'Ask the user which ambiguity_options location to use, then call pmf_resolve_location. Do NOT call pmf_confirm_run yet.'
-            : 'Present estimate.total_low–estimate.total_high and key assumptions. Ask the user to confirm spending. Prefer max_records 25–100 for first pulls. Only then call pmf_confirm_run with confirm_spend=true.',
+            : 'Present estimate.total_low–estimate.total_high, zip_count/center/radius when set, and key assumptions. Ask the user to confirm spending. Prefer max_records 25–100 for first pulls. Only then call pmf_confirm_run with confirm_spend=true.',
         });
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'parse failed');
@@ -257,27 +317,40 @@ NEXT: Show the refreshed estimate and wait for user approval before pmf_confirm_
     async ({ run_id, location_value }) => {
       const run = getRun(run_id);
       if (!run) return errorResult('run not found');
-      const params: ParsedQueryParams = {
-        ...run.parsed_params,
-        location_value,
-        ambiguous: false,
-        ambiguity_options: [],
-        ambiguity_reason: null,
-      };
-      const estimate = estimateCost(params);
-      const updated = updateRun(run.id, {
-        parsed_params: params,
-        total_cost_estimate: estimate.total_high,
-        cost_estimate_detail: estimate,
-        status: 'awaiting_confirmation',
-      });
-      return jsonResult({
-        run: publicRunView(updated),
-        parsed: params,
-        estimate,
-        assistant_instructions:
-          'Present the estimate and wait for explicit user approval before pmf_confirm_run(confirm_spend=true).',
-      });
+      try {
+        const planned = await planMarket({
+          params: {
+            ...run.parsed_params,
+            location_value,
+            center:
+              run.parsed_params.location_type === 'radius' || run.parsed_params.center
+                ? location_value
+                : run.parsed_params.center,
+            ambiguous: false,
+            ambiguity_options: [],
+            ambiguity_reason: null,
+          },
+        });
+        const updated = updateRun(run.id, {
+          parsed_params: planned.parsed,
+          total_cost_estimate: planned.estimate.total_high,
+          cost_estimate_detail: planned.estimate,
+          status: 'awaiting_confirmation',
+        });
+        return jsonResult({
+          run: publicRunView(updated),
+          parsed: planned.parsed,
+          estimate: planned.estimate,
+          zip_count: planned.zip_count,
+          states: planned.states,
+          center: planned.center,
+          radius_miles: planned.radius_miles,
+          assistant_instructions:
+            'Present the estimate and wait for explicit user approval before pmf_confirm_run(confirm_spend=true).',
+        });
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'resolve failed');
+      }
     },
   );
 
@@ -436,17 +509,27 @@ HOW TO PRESENT: Summarize counts by pm_confidence and contact_source; highlight 
     {
       title: 'Export results CSV',
       description: `WHEN TO USE: User wants a downloadable/importable contact file for Smartlead, Sheets, etc.
-WHAT IT DOES: Returns full contact-level CSV text for the run.
+WHAT IT DOES: Returns full contact-level CSV text including latitude/longitude. Optional center+radius_miles filters rows post-hoc without re-scraping.
 WHEN NOT TO USE: For a quick chat summary — use pmf_get_results instead.`,
       inputSchema: {
         run_id: z.string().uuid(),
+        center: z
+          .string()
+          .optional()
+          .describe('Optional "lat,lng" center for post-hoc radius filter'),
+        radius_miles: z
+          .number()
+          .positive()
+          .optional()
+          .describe('Optional miles from center; rows without coordinates are dropped when set'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ run_id }) => {
+    async ({ run_id, center, radius_miles }) => {
       const run = getRun(run_id);
       if (!run) return errorResult('run not found');
-      const csv = toCsv(buildExportRows(run_id));
+      const rows = filterExportRows(buildExportRows(run_id), { center, radius_miles });
+      const csv = toCsv(rows);
       return {
         content: [
           {
@@ -462,29 +545,57 @@ WHEN NOT TO USE: For a quick chat summary — use pmf_get_results instead.`,
     'pmf_estimate_cost',
     {
       title: 'Estimate cost from structured params',
-      description: `WHEN TO USE: User asks "what would 500 records in Dallas cost?" and you already know structured location fields — or you want a what-if without creating a run.
-WHAT IT DOES: Returns cost estimate only. No run created, no spend.
+      description: `WHEN TO USE: User asks "what would 500 records in Dallas cost?" with structured fields, or wants a ZIP/radius what-if without creating a run.
+WHAT IT DOES: Resolves geography (zips > center+radius > city/county) and returns cost estimate. No spend.
 WHEN NOT TO USE: User gave free text and wants to actually pull — use pmf_parse_query instead.`,
       inputSchema: {
-        location_type: z.enum(['city', 'radius', 'county']),
-        location_value: z.string().min(1),
+        location_type: z.enum(['city', 'radius', 'county', 'zips']).optional(),
+        location_value: z.string().optional(),
         radius_miles: z.number().nullable().optional(),
         max_records: z.number().int().min(1).max(50000).optional(),
+        zips: z
+          .string()
+          .optional()
+          .describe('Comma-separated 5-digit ZIPs; wins over center/radius/city'),
+        center: z.string().optional().describe('"Dallas, TX" or "32.7767,-97.0000"'),
+        exclude_categories: z.string().optional(),
+        brief: z.string().optional().describe('Optional NL brief instead of structured fields'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async ({ location_type, location_value, radius_miles, max_records }) => {
-      const params: ParsedQueryParams = {
-        location_type,
-        location_value,
-        radius_miles: location_type === 'radius' ? radius_miles ?? 50 : null,
-        property_type: 'commercial',
-        max_records: max_records ?? 5000,
-        ambiguous: false,
-        ambiguity_options: [],
-        ambiguity_reason: null,
-      };
-      return jsonResult({ params, estimate: estimateCost(params) });
+    async ({
+      location_type,
+      location_value,
+      radius_miles,
+      max_records,
+      zips,
+      center,
+      exclude_categories,
+      brief,
+    }) => {
+      try {
+        const planned = await planMarket({
+          query: brief,
+          location_type,
+          location_value,
+          radius_miles: radius_miles ?? undefined,
+          max_records,
+          zips,
+          center,
+          exclude_categories,
+        });
+        return jsonResult({
+          params: planned.parsed,
+          estimate: planned.estimate,
+          zip_count: planned.zip_count,
+          states: planned.states,
+          center: planned.center,
+          radius_miles: planned.radius_miles,
+          geo_mode: planned.mode,
+        });
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'estimate failed');
+      }
     },
   );
 

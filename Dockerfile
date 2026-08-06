@@ -12,5 +12,6 @@ COPY package.json package-lock.json* ./
 RUN npm install --omit=dev
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/client/dist ./client/dist
+COPY --from=build /app/data ./data
 EXPOSE 8080
 CMD ["node", "dist/server/index.js"]

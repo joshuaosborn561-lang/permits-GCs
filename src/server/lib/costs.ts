@@ -20,6 +20,24 @@ export function estimateCost(params: ParsedQueryParams): CostEstimate {
   const contactLow = 0;
   const contactHigh = Math.round(n * 0.15) * (COST.aiArkPerLookup + COST.leadmagicPerLookup * 0.3);
 
+  const geoNotes: string[] = [];
+  if (params.zips?.length) {
+    geoNotes.push(
+      `Explicit ZIP list: ${params.zips.length} ZIPs (Propwire searches each ZIP; results filtered to this list)`,
+    );
+  } else if (params.center && params.radius_miles) {
+    geoNotes.push(
+      `Radius search: ${params.radius_miles} mi around ${params.center}` +
+        (params.zip_count ? ` → ${params.zip_count} ZIPs in footprint` : ''),
+    );
+  }
+  if (params.states?.length) {
+    geoNotes.push(`States: ${params.states.join(', ')}`);
+  }
+  if (params.exclude_categories?.length) {
+    geoNotes.push(`Excluding categories: ${params.exclude_categories.join(', ')}`);
+  }
+
   return {
     step1_propwire: round6(step1),
     step2_openai: round6(step2),
@@ -30,6 +48,7 @@ export function estimateCost(params: ParsedQueryParams): CostEstimate {
     total_low: round6(total + contactLow),
     total_high: round6(total + contactHigh),
     assumptions: [
+      ...geoNotes,
       `LoopNet fallout assumption: ${(fallout * 100).toFixed(0)}% of records (LOOPNET_FALLOUT_PCT)`,
       `Google search capped at ${config.googleSearchHardCap} queries`,
       `Propwire full detail: $${COST.propwirePerRecord}/record`,

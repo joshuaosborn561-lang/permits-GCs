@@ -7,6 +7,25 @@ import { withRetry } from './retry.js';
  * Respect usage policy: identify app via User-Agent, keep rate modest.
  */
 export async function geocodeLocation(params: ParsedQueryParams): Promise<GeocodedLocation> {
+  // Explicit center coordinates from ZIP/radius resolution win over Nominatim.
+  if (
+    params.center_lat != null &&
+    params.center_lng != null &&
+    Number.isFinite(params.center_lat) &&
+    Number.isFinite(params.center_lng)
+  ) {
+    const state = params.states?.[0];
+    return {
+      display_name: params.center || params.location_value,
+      city: params.location_type === 'county' ? undefined : params.location_value.split(',')[0],
+      state,
+      state_code: state,
+      latitude: params.center_lat,
+      longitude: params.center_lng,
+      zip_codes: params.zips?.length ? params.zips : undefined,
+    };
+  }
+
   if (config.demoMode) {
     return demoGeocode(params);
   }
@@ -14,7 +33,7 @@ export async function geocodeLocation(params: ParsedQueryParams): Promise<Geocod
   const q =
     params.location_type === 'county' && !/county/i.test(params.location_value)
       ? `${params.location_value} County`
-      : params.location_value;
+      : params.center || params.location_value;
 
   const url = new URL('https://nominatim.openstreetmap.org/search');
   url.searchParams.set('q', q);
