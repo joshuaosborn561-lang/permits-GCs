@@ -32,14 +32,8 @@ Or locally without building: `npm run mcp` (tsx).
 
 The Railway app exposes:
 
-- `POST https://<your-railway-domain>/mcp` — MCP streamable HTTP
-- `GET  https://<your-railway-domain>/mcp/health` — tool list / auth flag
-
-Set `MCP_API_KEY` on Railway, then send:
-
-```http
-Authorization: Bearer <MCP_API_KEY>
-```
+- `POST https://<your-railway-domain>/mcp` — MCP streamable HTTP (no auth)
+- `GET  https://<your-railway-domain>/mcp/health` — tool list
 
 ## Safety
 

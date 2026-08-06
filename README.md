@@ -137,7 +137,7 @@ Full tool access for Claude Desktop / Cursor / remote Claude connectors. See [`m
 | Mode | How |
 |------|-----|
 | **Claude Desktop (stdio)** | `npm run build && node dist/mcp/stdio.js` — config example in `mcp/claude_desktop_config.example.json` |
-| **Remote HTTP** | `POST /mcp` on the Railway URL (set `MCP_API_KEY` and send `Authorization: Bearer …`) |
+| **Remote HTTP** | `POST /mcp` on the Railway URL (no auth) |
 | **Health** | `GET /mcp/health` |
 
 Tools: `pmf_health`, `pmf_parse_query`, `pmf_resolve_location`, `pmf_confirm_run` (write/spend), `pmf_get_run`, `pmf_list_runs`, `pmf_get_results`, `pmf_export_csv`, `pmf_estimate_cost`. Prompt: `pmf_run_commercial_pull`.

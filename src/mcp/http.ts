@@ -1,29 +1,11 @@
-import type { Express, NextFunction, Request, Response } from 'express';
+import type { Express, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createPmFinderMcpServer } from './createServer.js';
 
-/**
- * Mount Streamable HTTP MCP at /mcp for remote Claude / Cursor connectors.
- * Optional bearer auth via MCP_API_KEY (or AUTHORIZATION_TOKEN).
- */
+/** Mount Streamable HTTP MCP at /mcp for remote Claude / Cursor connectors. No auth. */
 export function mountMcpHttp(app: Express): void {
-  const expectedKey = process.env.MCP_API_KEY || process.env.AUTHORIZATION_TOKEN || '';
-
-  function requireMcpAuth(req: Request, res: Response, next: NextFunction) {
-    if (!expectedKey) return next();
-    const header = req.header('authorization') || '';
-    const token = header.toLowerCase().startsWith('bearer ')
-      ? header.slice(7).trim()
-      : req.header('x-mcp-api-key') || '';
-    if (token !== expectedKey) {
-      res.status(401).json({ error: 'Unauthorized — set Authorization: Bearer <MCP_API_KEY>' });
-      return;
-    }
-    next();
-  }
-
   // Stateless streamable HTTP: one server+transport per request
-  app.all('/mcp', requireMcpAuth, async (req, res) => {
+  app.all('/mcp', async (req: Request, res: Response) => {
     if (req.method === 'GET' || req.method === 'DELETE') {
       // Stateless mode has no long-lived SSE sessions
       res.status(405).set('Allow', 'POST').json({
@@ -58,7 +40,7 @@ export function mountMcpHttp(app: Express): void {
       ok: true,
       transport: 'streamable-http',
       path: '/mcp',
-      authRequired: Boolean(expectedKey),
+      authRequired: false,
       tools: [
         'pmf_health',
         'pmf_parse_query',
