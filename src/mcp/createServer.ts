@@ -13,7 +13,11 @@ import {
 import { startPipeline } from '../server/pipeline/runner.js';
 import { parseNaturalLanguageQuery } from '../server/services/parseQuery.js';
 import type { ContactExportRow, ParsedQueryParams } from '../server/types.js';
-import { GUIDE_MARKDOWN, SERVER_INSTRUCTIONS } from './instructions.js';
+import {
+  GUIDE_MARKDOWN,
+  SERVER_INSTRUCTIONS,
+  WHEN_TO_USE_MARKDOWN,
+} from './instructions.js';
 
 function jsonResult(data: unknown) {
   return {
@@ -39,8 +43,14 @@ function healthPayload() {
     getleadsConfigured: Boolean(config.getleadsApiKey),
     aiArkConfigured: Boolean(config.aiArkApiKey),
     leadmagicConfigured: Boolean(config.leadmagicApiKey),
+    product:
+      'SalesGlider commercial property owner → PM company → decision-maker contacts for outbound.',
+    when_to_use:
+      'Commercial property owners/landlords/PMs/decision-maker contacts in a US city, county, or radius; or status/CSV of an existing PM-finder run.',
+    when_not_to_use:
+      'Google Maps local-business scrapes, residential-only lists, Smartlead/CRM sends, LLC→person resolution.',
     how_to_use:
-      'Read resource pmf://guide. Workflow: pmf_health → pmf_parse_query → (pmf_resolve_location if ambiguous) → show estimate → wait for user approval → pmf_confirm_run(confirm_spend=true) → poll pmf_get_run → pmf_get_results / pmf_export_csv.',
+      'Read pmf://guide (or pmf://when-to-use). Workflow: pmf_health → pmf_parse_query → (pmf_resolve_location if ambiguous) → show estimate → wait for explicit user approval → pmf_confirm_run(confirm_spend=true) → poll pmf_get_run → pmf_get_results / pmf_export_csv. Never confirm without approval.',
   };
 }
 
@@ -123,10 +133,10 @@ export function createPmFinderMcpServer(): McpServer {
   const server = new McpServer(
     {
       name: 'property-pm-finder',
-      version: '1.0.0',
+      version: '1.1.0',
       title: 'SalesGlider Property PM Finder',
       description:
-        'Commercial property owner → property manager → decision-maker contact finder for SalesGlider Growth outbound.',
+        'USE FOR: commercial property owners, property managers, and PM decision-maker contacts in a US market (city/county/radius), plus status/CSV of those runs. DO NOT USE FOR: Google Maps local businesses, residential-only lists, Smartlead sends, or LLC→person resolution. SPEND RULE: parse/estimate are free; only pmf_confirm_run spends money and requires explicit user approval after you show the estimate. Workflow: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV. Read resources pmf://guide and pmf://when-to-use.',
     },
     {
       instructions: SERVER_INSTRUCTIONS,
@@ -139,7 +149,7 @@ export function createPmFinderMcpServer(): McpServer {
     {
       title: 'Property PM Finder operator guide',
       description:
-        'Read this first. Explains what the MCP does, when to use it, when not to, the spend-safe workflow, and how to interpret results.',
+        'Read this first (or when unsure). Full manual: what the MCP does, trigger phrases, anti-triggers, spend-safe workflow, cascade, and how to interpret results.',
       mimeType: 'text/markdown',
     },
     async (uri) => ({
@@ -148,6 +158,26 @@ export function createPmFinderMcpServer(): McpServer {
           uri: uri.href,
           mimeType: 'text/markdown',
           text: GUIDE_MARKDOWN,
+        },
+      ],
+    }),
+  );
+
+  server.registerResource(
+    'pmf_when_to_use',
+    'pmf://when-to-use',
+    {
+      title: 'When to use this MCP (quick)',
+      description:
+        'Short yes/no decision: when to use Property PM Finder vs other tools, plus the money gate.',
+      mimeType: 'text/markdown',
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: 'text/markdown',
+          text: WHEN_TO_USE_MARKDOWN,
         },
       ],
     }),
@@ -463,7 +493,7 @@ WHEN NOT TO USE: User gave free text and wants to actually pull — use pmf_pars
     {
       title: 'Run a commercial PM finder pull',
       description:
-        'Use this prompt whenever the user wants commercial property owners / PMs / decision-maker contacts for a market. Enforces estimate → approval → run → results.',
+        'PRIMARY PROMPT: use whenever the user wants commercial property owners / PMs / decision-maker contacts for a US market. Enforces estimate → human approval → paid run → results.',
       argsSchema: {
         request: z
           .string()
@@ -478,21 +508,69 @@ WHEN NOT TO USE: User gave free text and wants to actually pull — use pmf_pars
           role: 'user',
           content: {
             type: 'text',
-            text: `You are operating the SalesGlider Property PM Finder MCP.
+            text: `You are operating the SalesGlider Property PM Finder MCP (commercial owners → PMs → decision-maker contacts).
 
 User request:
 "${request}"
 
 Follow this exact workflow:
-1. Read resource pmf://guide if you have not already.
-2. Call pmf_health. If demoMode=true or critical keys are missing, warn the user before continuing.
-3. Call pmf_parse_query with the request.
+1. Read pmf://when-to-use (and pmf://guide if needed). Confirm this is commercial property PM outreach — not Maps businesses or Smartlead send.
+2. Call pmf_health. If demoMode=true or critical keys are missing, warn before continuing.
+3. Call pmf_parse_query with the request (free; creates run awaiting_confirmation).
 4. If ambiguous=true, ask which ambiguity_options location to use, then pmf_resolve_location. Never guess silently.
-5. Show the cost estimate clearly ($low–$high + short assumptions). Ask for explicit approval to spend.
-6. Do NOT call pmf_confirm_run until the user clearly approves. Prefer max_records=100 unless they specify otherwise.
-7. After confirm_spend=true, poll pmf_get_run until completed/failed.
-8. Call pmf_get_results. Summarize: records pulled, PM resolved by source/confidence, contacts found (note getleads=$0). Offer pmf_export_csv.
-9. Never invent contacts or property managers. Never start a paid run just because the user asked to "look into" a market — estimates are free; confirms spend money.`,
+5. Show cost estimate clearly ($low–$high, location, record cap, short assumptions). Ask for explicit approval to spend. Recommend max_records=100 for a first pull.
+6. Do NOT call pmf_confirm_run until the user clearly approves ("confirm", "run it", "go ahead"). Vague interest is not approval.
+7. After confirm_spend=true, poll pmf_get_run until completed/failed. Explain cascade steps if asked (Propwire → c/o → LoopNet → Google → enrichment).
+8. Call pmf_get_results. Summarize: records pulled, PM by confidence/source, contacts by contact_source (note getleads=$0). Offer pmf_export_csv.
+9. Never invent contacts or PMs. Estimates are free; confirms spend money.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pmf_check_run_status',
+    {
+      title: 'Check PM finder run status',
+      description:
+        'Use when the user asks for status, progress, or cost of an existing Property PM Finder run.',
+      argsSchema: {
+        run_id: z.string().optional().describe('Known run UUID; omit to list recent runs first'),
+      },
+    },
+    async ({ run_id }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: run_id
+              ? `Check Property PM Finder run ${run_id}: call pmf_get_run. If running, report current_step and progress; if completed, summarize via pmf_get_results and offer CSV; if failed, report the error clearly. Do not start a new paid run.`
+              : `User wants status of Property PM Finder runs. Call pmf_list_runs, help them identify the right run_id, then pmf_get_run. Do not start a new paid run unless they explicitly ask and approve a new estimate.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pmf_export_contacts',
+    {
+      title: 'Export PM finder contacts',
+      description:
+        'Use when the user wants CSV or contact rows from a completed (or existing) Property PM Finder run.',
+      argsSchema: {
+        run_id: z.string().describe('Run UUID to export'),
+      },
+    },
+    async ({ run_id }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Export Property PM Finder contacts for run ${run_id}. Call pmf_get_run first. If completed (or has rows), call pmf_get_results for a short summary, then pmf_export_csv and provide the CSV. Do not invent rows. Do not start a new paid run.`,
           },
         },
       ],

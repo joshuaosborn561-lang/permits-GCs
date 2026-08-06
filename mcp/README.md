@@ -1,8 +1,13 @@
 # Property PM Finder MCP Server
 
-Gives Claude full access to SalesGlider’s commercial property owner → property manager → decision-maker pipeline.
+Gives Claude (Desktop, Cursor, or any MCP client) full access to SalesGlider’s commercial property owner → property manager → decision-maker pipeline.
 
-Claude receives **server instructions on connect**, a **`pmf://guide` resource**, and tool descriptions that spell out when to use / when not to use each tool.
+On connect, Claude receives:
+
+1. **`instructions`** (initialize) — full operating manual: what / when / when-not / spend rules / workflow
+2. **Resources** — `pmf://guide` (full) and `pmf://when-to-use` (quick decision)
+3. **Tool descriptions** — each tool has WHEN TO USE / WHAT IT DOES / WHEN NOT TO USE
+4. **Prompts** — `pmf_run_commercial_pull`, `pmf_check_run_status`, `pmf_export_contacts`
 
 ## What it does
 
@@ -41,7 +46,7 @@ Turns requests like “commercial property owners in Fort Worth, TX” into outr
 
 | Tool | Spends $? | Purpose |
 |------|-----------|---------|
-| `pmf_health` | No | Readiness |
+| `pmf_health` | No | Readiness + when/how summary |
 | `pmf_parse_query` | No | NL → params + estimate |
 | `pmf_resolve_location` | No | Fix ambiguous location |
 | `pmf_estimate_cost` | No | What-if cost |
@@ -51,9 +56,6 @@ Turns requests like “commercial property owners in Fort Worth, TX” into outr
 | `pmf_get_results` | No | Contact rows |
 | `pmf_export_csv` | No | CSV text |
 
-Resource: `pmf://guide`  
-Prompt: `pmf_run_commercial_pull`
-
 ## Claude Desktop (stdio)
 
 1. `npm run build`
@@ -62,7 +64,11 @@ Prompt: `pmf_run_commercial_pull`
 4. Fill env vars
 5. Restart Claude Desktop
 
-## Remote HTTP
+After connect, Claude should already see the operating manual via initialize `instructions`. You can also ask it to “read pmf://guide”.
+
+## Remote HTTP (Railway)
 
 - `POST https://workspace-production-4702.up.railway.app/mcp` (no auth)
 - `GET  https://workspace-production-4702.up.railway.app/mcp/health`
+
+For Cursor / Claude with remote MCP, point the client at that `/mcp` URL. The same initialize instructions and resources apply.
