@@ -53,6 +53,8 @@ export function mountMcpHttp(app: Express): void {
         'pmf_estimate_cost',
       ],
       prompts: ['pmf_run_commercial_pull'],
+      resources: ['pmf://guide'],
+      note: 'Server sends detailed instructions on initialize. Read pmf://guide for the full operator guide.',
     });
   });
 }

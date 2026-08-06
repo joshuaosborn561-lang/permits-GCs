@@ -13,6 +13,7 @@ import {
 import { startPipeline } from '../server/pipeline/runner.js';
 import { parseNaturalLanguageQuery } from '../server/services/parseQuery.js';
 import type { ContactExportRow, ParsedQueryParams } from '../server/types.js';
+import { GUIDE_MARKDOWN, SERVER_INSTRUCTIONS } from './instructions.js';
 
 function jsonResult(data: unknown) {
   return {
@@ -38,6 +39,8 @@ function healthPayload() {
     getleadsConfigured: Boolean(config.getleadsApiKey),
     aiArkConfigured: Boolean(config.aiArkApiKey),
     leadmagicConfigured: Boolean(config.leadmagicApiKey),
+    how_to_use:
+      'Read resource pmf://guide. Workflow: pmf_health → pmf_parse_query → (pmf_resolve_location if ambiguous) → show estimate → wait for user approval → pmf_confirm_run(confirm_spend=true) → poll pmf_get_run → pmf_get_results / pmf_export_csv.',
   };
 }
 
@@ -117,17 +120,47 @@ function toCsv(rows: ContactExportRow[]): string {
 
 /** Fresh MCP server instance with all Property PM Finder tools. */
 export function createPmFinderMcpServer(): McpServer {
-  const server = new McpServer({
-    name: 'property-pm-finder',
-    version: '1.0.0',
-  });
+  const server = new McpServer(
+    {
+      name: 'property-pm-finder',
+      version: '1.0.0',
+      title: 'SalesGlider Property PM Finder',
+      description:
+        'Commercial property owner → property manager → decision-maker contact finder for SalesGlider Growth outbound.',
+    },
+    {
+      instructions: SERVER_INSTRUCTIONS,
+    },
+  );
+
+  server.registerResource(
+    'pmf_guide',
+    'pmf://guide',
+    {
+      title: 'Property PM Finder operator guide',
+      description:
+        'Read this first. Explains what the MCP does, when to use it, when not to, the spend-safe workflow, and how to interpret results.',
+      mimeType: 'text/markdown',
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: 'text/markdown',
+          text: GUIDE_MARKDOWN,
+        },
+      ],
+    }),
+  );
 
   server.registerTool(
     'pmf_health',
     {
       title: 'Health check',
-      description:
-        'Check Property PM Finder readiness: demo/live mode and which API integrations are configured (OpenAI, Apify, Supabase, getleads, AI Ark, LeadMagic).',
+      description: `WHEN TO USE: At the start of any PM-finder request, or if a run fails mysteriously.
+WHAT IT DOES: Reports demo/live mode and whether OpenAI, Apify, Supabase, getleads, AI Ark, LeadMagic are configured.
+WHEN NOT TO USE: Not a substitute for parsing or running a pull.
+NEXT: If ready, call pmf_parse_query. If demoMode=true, warn the user that results will be synthetic.`,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -138,14 +171,17 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_parse_query',
     {
       title: 'Parse natural language query',
-      description:
-        'Parse a free-text commercial property pull request into structured params and a cost estimate. Does NOT start the pipeline or spend money. If ambiguous=true, call pmf_resolve_location before confirming.',
+      description: `WHEN TO USE: User asks for commercial property owners / PMs / landlords in a US market (city, county, or miles-from-city).
+WHAT IT DOES: Parses free text into location params + cost estimate and creates a run in awaiting_confirmation. Does NOT spend money and does NOT start scraping.
+WHEN NOT TO USE: User only wants a cost what-if with already-known structured params → use pmf_estimate_cost instead. User wants Maps restaurant/local business leads → wrong tool.
+IMPORTANT: If response.ambiguous=true, do not confirm — ask the user to pick from ambiguity_options, then call pmf_resolve_location.
+NEXT: Show estimate to the user. Wait for explicit approval before pmf_confirm_run.`,
       inputSchema: {
         query: z
           .string()
           .min(1)
           .describe(
-            'Natural language request, e.g. "Get me all commercial property owners in Fort Worth, TX"',
+            'Natural language market request, e.g. "Get me all commercial property owners in Fort Worth, TX" or "commercial properties within 50 miles of Dallas, TX — 100 records"',
           ),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -161,9 +197,9 @@ export function createPmFinderMcpServer(): McpServer {
           estimate,
           needs_confirmation: true,
           ambiguous: Boolean(parsed.ambiguous),
-          next_step: parsed.ambiguous
-            ? 'Call pmf_resolve_location with one of ambiguity_options, then pmf_confirm_run.'
-            : 'Show the cost estimate to the user. Only call pmf_confirm_run after explicit user approval.',
+          assistant_instructions: parsed.ambiguous
+            ? 'Ask the user which ambiguity_options location to use, then call pmf_resolve_location. Do NOT call pmf_confirm_run yet.'
+            : 'Present estimate.total_low–estimate.total_high and key assumptions. Ask the user to confirm spending. Prefer max_records 25–100 for first pulls. Only then call pmf_confirm_run with confirm_spend=true.',
         });
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'parse failed');
@@ -175,14 +211,16 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_resolve_location',
     {
       title: 'Resolve ambiguous location',
-      description:
-        'Resolve a previously parsed run when the location was ambiguous (e.g. pick "Fort Worth, TX"). Refreshes the cost estimate. Does not start the pipeline.',
+      description: `WHEN TO USE: pmf_parse_query returned ambiguous=true (e.g. "Springfield" without a state).
+WHAT IT DOES: Locks the run to a concrete location_value and refreshes the cost estimate. Still does not spend money.
+WHEN NOT TO USE: Location already includes a clear state/county and ambiguous=false.
+NEXT: Show the refreshed estimate and wait for user approval before pmf_confirm_run.`,
       inputSchema: {
         run_id: z.string().uuid().describe('Run id from pmf_parse_query'),
         location_value: z
           .string()
           .min(1)
-          .describe('Disambiguated location, e.g. "Fort Worth, TX"'),
+          .describe('User-chosen disambiguated location, e.g. "Fort Worth, TX" or "Fulton County, GA"'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -207,8 +245,8 @@ export function createPmFinderMcpServer(): McpServer {
         run: publicRunView(updated),
         parsed: params,
         estimate,
-        next_step:
-          'Show the cost estimate. Call pmf_confirm_run only after explicit user approval to spend.',
+        assistant_instructions:
+          'Present the estimate and wait for explicit user approval before pmf_confirm_run(confirm_spend=true).',
       });
     },
   );
@@ -217,20 +255,25 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_confirm_run',
     {
       title: 'Confirm and start pipeline',
-      description:
-        'WRITE / SPENDS MONEY. Starts the Propwire → c/o → LoopNet → Google → contact enrichment pipeline for a previously parsed run. Requires confirm_spend=true and prior explicit user approval after showing the cost estimate. Optionally override max_records for a small sample (recommended 25–100 first).',
+      description: `WHEN TO USE: Only after (1) parse/resolve is done, (2) you showed the cost estimate, and (3) the user explicitly approved spending (e.g. "confirm", "run it", "go ahead").
+WHAT IT DOES: Starts the paid pipeline: Propwire → c/o parse → LoopNet → Google (cap 5000) → contact enrichment waterfall. Writes results to Supabase / scrape_leads.
+SPENDS MONEY: Yes. Requires confirm_spend=true.
+WHEN NOT TO USE: User is still deciding, only asked for an estimate, or location is still ambiguous.
+RECOMMENDED: Pass max_records=100 (or 25) for first pulls unless user demanded a full market.`,
       inputSchema: {
         run_id: z.string().uuid().describe('Run id awaiting confirmation'),
         confirm_spend: z
-          .boolean()
-          .describe('Must be true. Confirms the user approved spending money on this run.'),
+          .literal(true)
+          .describe(
+            'Must be the boolean true, and only after the human explicitly approved the estimate/spend.',
+          ),
         max_records: z
           .number()
           .int()
           .min(1)
           .max(50000)
           .optional()
-          .describe('Optional override; use 25–100 for a test sample'),
+          .describe('Override record cap. Use 25–100 for samples; omit only if user wants the parsed default.'),
       },
       annotations: {
         readOnlyHint: false,
@@ -239,9 +282,9 @@ export function createPmFinderMcpServer(): McpServer {
       },
     },
     async ({ run_id, confirm_spend, max_records }) => {
-      if (!confirm_spend) {
+      if (confirm_spend !== true) {
         return errorResult(
-          'confirm_spend must be true. Show the cost estimate and get explicit user approval first.',
+          'confirm_spend must be true after explicit user approval. Do not start the pipeline yet.',
         );
       }
       const run = getRun(run_id);
@@ -265,7 +308,8 @@ export function createPmFinderMcpServer(): McpServer {
       void startPipeline(run.id);
       return jsonResult({
         run: publicRunView(getRun(run.id)!),
-        next_step: 'Poll pmf_get_run until status is completed or failed, then pmf_get_results.',
+        assistant_instructions:
+          'Poll pmf_get_run until status is completed or failed. Then call pmf_get_results and offer pmf_export_csv. Do not invent contacts.',
       });
     },
   );
@@ -274,8 +318,10 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_get_run',
     {
       title: 'Get run status',
-      description:
-        'Get live status, current step, progress counters (resolved at each cascade step), and running cost for a run.',
+      description: `WHEN TO USE: After pmf_confirm_run, or when the user asks for status/cost of a run.
+WHAT IT DOES: Returns status, current_step, cascade progress counters, and total_cost_actual.
+WHEN NOT TO USE: Before a run exists — parse first.
+TIP: Poll every few seconds while status=running.`,
       inputSchema: {
         run_id: z.string().uuid(),
       },
@@ -292,7 +338,9 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_list_runs',
     {
       title: 'List runs',
-      description: 'List recent Property PM Finder runs with status and cost summary.',
+      description: `WHEN TO USE: User asks what pulls have been run, or you need to find a run_id.
+WHAT IT DOES: Lists recent runs with status and cost summary (newest first).
+WHEN NOT TO USE: For fetching contacts — use pmf_get_results on a specific run.`,
       inputSchema: {
         limit: z.number().int().min(1).max(100).optional().describe('Max runs to return (default 20)'),
       },
@@ -310,8 +358,10 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_get_results',
     {
       title: 'Get contact-level results',
-      description:
-        'Return contact-level result rows for a run (one row per decision maker, with property/owner/PM fields joined). Supports optional search and filters.',
+      description: `WHEN TO USE: Run status is completed (or user wants a preview of whatever is available).
+WHAT IT DOES: Returns outreach-ready contact rows (one row per decision maker) joined with owner/PM/property fields. Optional filters.
+WHEN NOT TO USE: To start a pull — use parse/confirm. Do not fabricate rows if empty.
+HOW TO PRESENT: Summarize counts by pm_confidence and contact_source; highlight getleads=$0; mention unresolved PMs.`,
       inputSchema: {
         run_id: z.string().uuid(),
         q: z.string().optional().describe('Search name, email, company, address'),
@@ -355,8 +405,9 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_export_csv',
     {
       title: 'Export results CSV',
-      description:
-        'Export contact-level results as CSV text for a run (ready for Smartlead / spreadsheet import).',
+      description: `WHEN TO USE: User wants a downloadable/importable contact file for Smartlead, Sheets, etc.
+WHAT IT DOES: Returns full contact-level CSV text for the run.
+WHEN NOT TO USE: For a quick chat summary — use pmf_get_results instead.`,
       inputSchema: {
         run_id: z.string().uuid(),
       },
@@ -381,8 +432,9 @@ export function createPmFinderMcpServer(): McpServer {
     'pmf_estimate_cost',
     {
       title: 'Estimate cost from structured params',
-      description:
-        'Estimate pipeline cost from structured location params without creating a run. Useful for what-if sizing (e.g. 100 vs 5000 records).',
+      description: `WHEN TO USE: User asks "what would 500 records in Dallas cost?" and you already know structured location fields — or you want a what-if without creating a run.
+WHAT IT DOES: Returns cost estimate only. No run created, no spend.
+WHEN NOT TO USE: User gave free text and wants to actually pull — use pmf_parse_query instead.`,
       inputSchema: {
         location_type: z.enum(['city', 'radius', 'county']),
         location_value: z.string().min(1),
@@ -411,7 +463,7 @@ export function createPmFinderMcpServer(): McpServer {
     {
       title: 'Run a commercial PM finder pull',
       description:
-        'Guided workflow: parse a market request, resolve ambiguity, show cost, get user approval, run pipeline, return contacts.',
+        'Use this prompt whenever the user wants commercial property owners / PMs / decision-maker contacts for a market. Enforces estimate → approval → run → results.',
       argsSchema: {
         request: z
           .string()
@@ -426,20 +478,21 @@ export function createPmFinderMcpServer(): McpServer {
           role: 'user',
           content: {
             type: 'text',
-            text: `Run a SalesGlider Property PM Finder pull for this request:
+            text: `You are operating the SalesGlider Property PM Finder MCP.
 
+User request:
 "${request}"
 
-Workflow:
-1. Call pmf_health. Warn if DEMO_MODE or missing keys.
-2. Call pmf_parse_query with the request.
-3. If ambiguous, ask the user which location option to use, then pmf_resolve_location.
-4. Show the cost estimate clearly. Do NOT call pmf_confirm_run until the user explicitly approves spending.
-5. Prefer a small max_records (25–100) unless they insist on a full pull.
-6. After confirm, poll pmf_get_run until completed/failed.
-7. Return pmf_get_results summary and offer pmf_export_csv.
-
-Never invent contacts. Contacts synced to Supabase scrape_leads when the run completes.`,
+Follow this exact workflow:
+1. Read resource pmf://guide if you have not already.
+2. Call pmf_health. If demoMode=true or critical keys are missing, warn the user before continuing.
+3. Call pmf_parse_query with the request.
+4. If ambiguous=true, ask which ambiguity_options location to use, then pmf_resolve_location. Never guess silently.
+5. Show the cost estimate clearly ($low–$high + short assumptions). Ask for explicit approval to spend.
+6. Do NOT call pmf_confirm_run until the user clearly approves. Prefer max_records=100 unless they specify otherwise.
+7. After confirm_spend=true, poll pmf_get_run until completed/failed.
+8. Call pmf_get_results. Summarize: records pulled, PM resolved by source/confidence, contacts found (note getleads=$0). Offer pmf_export_csv.
+9. Never invent contacts or property managers. Never start a paid run just because the user asked to "look into" a market — estimates are free; confirms spend money.`,
           },
         },
       ],

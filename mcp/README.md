@@ -1,40 +1,68 @@
 # Property PM Finder MCP Server
 
-Gives Claude (Desktop, Claude.ai custom connector, or Cursor) full access to the commercial property owner / PM finder pipeline.
+Gives Claude full access to SalesGlider’s commercial property owner → property manager → decision-maker pipeline.
+
+Claude receives **server instructions on connect**, a **`pmf://guide` resource**, and tool descriptions that spell out when to use / when not to use each tool.
+
+## What it does
+
+Turns requests like “commercial property owners in Fort Worth, TX” into outreach-ready contacts:
+
+1. Pull commercial properties (Propwire)
+2. Find the property management company (c/o → LoopNet → Google)
+3. Find the decision maker at that PM firm (getleads → AI Ark → LeadMagic → Google)
+4. Export contact-level CSV / sync into Supabase `scrape_leads`
+
+## When Claude should use it
+
+- Commercial property owners / landlords in a US city, county, or radius
+- Property managers for those buildings
+- Decision-maker contacts for outbound
+- Status / CSV export of an existing PM-finder run
+
+## When Claude should not use it
+
+- Google Maps local-business scrapes
+- Sending Smartlead / CRM campaigns from this MCP
+- LLC → individual legal-name resolution
+- Unrelated research
+
+## Spend-safe workflow (enforced in instructions)
+
+1. `pmf_health`
+2. `pmf_parse_query` (free)
+3. `pmf_resolve_location` if ambiguous
+4. Show estimate → **wait for explicit user approval**
+5. `pmf_confirm_run` with `confirm_spend=true` (spends money)
+6. Poll `pmf_get_run`
+7. `pmf_get_results` / `pmf_export_csv`
 
 ## Tools
 
-| Tool | Type | Purpose |
-|------|------|---------|
-| `pmf_health` | read | Integration readiness |
-| `pmf_parse_query` | read | NL → structured params + cost estimate (no spend) |
-| `pmf_resolve_location` | read | Disambiguate city/county |
-| `pmf_confirm_run` | **write** | Start pipeline (`confirm_spend=true` required) |
-| `pmf_get_run` | read | Live status / cost / cascade counters |
-| `pmf_list_runs` | read | Recent runs |
-| `pmf_get_results` | read | Contact-level rows + filters |
-| `pmf_export_csv` | read | CSV export text |
-| `pmf_estimate_cost` | read | What-if cost from structured params |
+| Tool | Spends $? | Purpose |
+|------|-----------|---------|
+| `pmf_health` | No | Readiness |
+| `pmf_parse_query` | No | NL → params + estimate |
+| `pmf_resolve_location` | No | Fix ambiguous location |
+| `pmf_estimate_cost` | No | What-if cost |
+| `pmf_confirm_run` | **Yes** | Start pipeline |
+| `pmf_get_run` | No | Live status |
+| `pmf_list_runs` | No | Recent runs |
+| `pmf_get_results` | No | Contact rows |
+| `pmf_export_csv` | No | CSV text |
 
-Prompt: `pmf_run_commercial_pull` — guided end-to-end workflow.
+Resource: `pmf://guide`  
+Prompt: `pmf_run_commercial_pull`
 
 ## Claude Desktop (stdio)
 
 1. `npm run build`
-2. Copy [`claude_desktop_config.example.json`](./claude_desktop_config.example.json) into your Claude Desktop MCP config
-3. Point `args` at the absolute path to `dist/mcp/stdio.js`
-4. Fill env vars (same as Railway)
+2. Copy [`claude_desktop_config.example.json`](./claude_desktop_config.example.json) into Claude Desktop MCP config
+3. Point `args` at absolute `dist/mcp/stdio.js`
+4. Fill env vars
 5. Restart Claude Desktop
 
-Or locally without building: `npm run mcp` (tsx).
+## Remote HTTP
 
-## Remote Claude / Cursor (Streamable HTTP)
-
-The Railway app exposes:
-
-- `POST https://<your-railway-domain>/mcp` — MCP streamable HTTP (no auth)
-- `GET  https://<your-railway-domain>/mcp/health` — tool list
-
-## Safety
-
-`pmf_confirm_run` spends Apify/OpenAI money. The tool requires `confirm_spend=true`. Claude should show the estimate from `pmf_parse_query` and wait for your explicit approval before calling it.
+- `POST https://workspace-production-4702.up.railway.app/mcp` (no auth)
+- `GET  https://workspace-production-4702.up.railway.app/mcp/health`
