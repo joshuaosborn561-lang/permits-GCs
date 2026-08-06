@@ -4,6 +4,9 @@
   "private": true,
   "description": "Commercial property owner + property manager finder for SalesGlider Growth",
   "type": "module",
+  "bin": {
+    "property-pm-finder-mcp": "./dist/mcp/stdio.js"
+  },
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:server": "tsx watch src/server/index.ts",
@@ -12,12 +15,15 @@
     "build:client": "vite build --config client/vite.config.ts",
     "build:server": "tsc -p tsconfig.json",
     "start": "node dist/server/index.js",
+    "mcp": "tsx src/mcp/stdio.ts",
+    "mcp:stdio": "node dist/mcp/stdio.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/supabase-js": "^2.49.1",
     "apify-client": "^2.12.1",
     "cors": "^2.8.5",
@@ -25,7 +31,7 @@
     "express": "^4.21.2",
     "openai": "^4.86.2",
     "uuid": "^11.1.0",
-    "zod": "^3.24.2"
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

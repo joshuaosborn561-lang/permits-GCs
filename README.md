@@ -130,6 +130,18 @@ DEMO_MODE=true npm start
 
 Apify platform minimums and OpenAI usage are billed by those platforms separately — UI numbers are estimates, not invoices.
 
+## MCP server (Claude)
+
+Full tool access for Claude Desktop / Cursor / remote Claude connectors. See [`mcp/README.md`](mcp/README.md).
+
+| Mode | How |
+|------|-----|
+| **Claude Desktop (stdio)** | `npm run build && node dist/mcp/stdio.js` — config example in `mcp/claude_desktop_config.example.json` |
+| **Remote HTTP** | `POST /mcp` on the Railway URL (set `MCP_API_KEY` and send `Authorization: Bearer …`) |
+| **Health** | `GET /mcp/health` |
+
+Tools: `pmf_health`, `pmf_parse_query`, `pmf_resolve_location`, `pmf_confirm_run` (write/spend), `pmf_get_run`, `pmf_list_runs`, `pmf_get_results`, `pmf_export_csv`, `pmf_estimate_cost`. Prompt: `pmf_run_commercial_pull`.
+
 ## API sketch
 
 - `POST /api/runs/parse` `{ query }` → parsed params + estimate + run id
@@ -138,6 +150,8 @@ Apify platform minimums and OpenAI usage are billed by those platforms separatel
 - `GET /api/runs/:id` → live status / cost
 - `GET /api/runs/:id/results` → contact-level rows
 - `GET /api/runs/:id/export.csv`
+- `POST /mcp` → MCP streamable HTTP
+- `GET /mcp/health` → MCP tool catalog
 
 ## Deploy (Railway)
 
