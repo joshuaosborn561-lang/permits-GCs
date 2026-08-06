@@ -27,11 +27,18 @@ export async function pullPropwire(opts: {
     let items: Record<string, unknown>[] = [];
     let zips_scraped: string[] | undefined;
 
-    if (opts.params.zips?.length) {
-      // Explicit ZIP list wins: one Propwire search per ZIP (most precise coverage).
+    // Only scrape ZIP-by-ZIP when the caller explicitly supplied zips.
+    // Radius footprints also populate `zips` for reporting — those must use one
+    // native lat/lng + radiusMiles Propwire search, not hundreds of actor runs.
+    const scrapeByZip =
+      Boolean(opts.params.zips_explicit) &&
+      Boolean(opts.params.zips?.length) &&
+      opts.params.location_type === 'zips';
+
+    if (scrapeByZip) {
       zips_scraped = opts.params.zips;
-      const perZip = Math.max(1, Math.ceil(opts.params.max_records / opts.params.zips.length));
-      for (const zip of opts.params.zips) {
+      const perZip = Math.max(1, Math.ceil(opts.params.max_records / opts.params.zips!.length));
+      for (const zip of opts.params.zips!) {
         if (items.length >= opts.params.max_records) break;
         const batch = await runActor<Record<string, unknown>>(
           ACTOR_ID,
@@ -119,7 +126,10 @@ export function filterProperties(
 ): PropertyRecord[] {
   let out = properties;
 
-  if (params.zips?.length) {
+  // Only hard-filter to the ZIP allowlist for explicit ZIP pulls.
+  // Radius footprints use haversine below instead (Propwire radius can return
+  // parcels whose USPS ZIP isn't in our STANDARD centroid table).
+  if (params.zips_explicit && params.zips?.length) {
     const allow = new Set(params.zips);
     out = out.filter((p) => !p.zip || allow.has(p.zip));
   }

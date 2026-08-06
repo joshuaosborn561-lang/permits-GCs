@@ -136,6 +136,7 @@ function normalizeParsed(
     zips: [],
     zip_count: 0,
     zips_csv: null,
+    zips_explicit: false,
   };
 }
 
@@ -173,6 +174,7 @@ export function heuristicParse(query: string): ParsedQueryParams {
       zips: zipList,
       zip_count: zipList.length,
       zips_csv: zipList.join(','),
+      zips_explicit: true,
       exclude_categories: exclude,
       states: [],
     };
@@ -216,6 +218,7 @@ export function heuristicParse(query: string): ParsedQueryParams {
       zips: [],
       zip_count: 0,
       zips_csv: null,
+      zips_explicit: false,
     };
   }
 
@@ -243,6 +246,7 @@ export function heuristicParse(query: string): ParsedQueryParams {
       zips: [],
       zip_count: 0,
       zips_csv: null,
+      zips_explicit: false,
     };
   }
 
@@ -283,6 +287,7 @@ export function heuristicParse(query: string): ParsedQueryParams {
     zips: [],
     zip_count: 0,
     zips_csv: null,
+    zips_explicit: false,
   };
 }
 
@@ -322,6 +327,7 @@ export function applyPlanOverrides(
       zips,
       zips_csv: zips.join(','),
       zip_count: zips.length,
+      zips_explicit: true,
       radius_miles: overrides.radius_miles ?? next.radius_miles,
       center: overrides.center ?? next.center,
     };

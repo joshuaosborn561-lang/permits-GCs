@@ -27,10 +27,16 @@ export interface ParsedQueryParams {
   ambiguous?: boolean;
   ambiguity_options?: string[];
   ambiguity_reason?: string | null;
-  /** Explicit ZIP list — wins over center/radius and city/county. */
+  /** ZIP list on the plan (explicit caller list OR resolved radius footprint). */
   zips?: string[];
   /** Raw CSV input before resolution (optional). */
   zips_csv?: string | null;
+  /**
+   * True only when the caller supplied an explicit ZIP list.
+   * Radius footprints also populate `zips` for reporting/filtering, but must NOT
+   * trigger one Propwire actor run per ZIP.
+   */
+  zips_explicit?: boolean;
   /** Human center label, e.g. "Dallas, TX" or "32.7767,-97.0000". */
   center?: string | null;
   center_lat?: number | null;

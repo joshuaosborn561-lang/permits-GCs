@@ -53,6 +53,7 @@ export async function planMarket(input: PlanMarketInput): Promise<PlanMarketResu
       zips: [],
       zip_count: 0,
       zips_csv: null,
+      zips_explicit: false,
       exclude_categories: parseExcludeCategories(input.exclude_categories),
       states: [],
     };

@@ -21,14 +21,16 @@ export function estimateCost(params: ParsedQueryParams): CostEstimate {
   const contactHigh = Math.round(n * 0.15) * (COST.aiArkPerLookup + COST.leadmagicPerLookup * 0.3);
 
   const geoNotes: string[] = [];
-  if (params.zips?.length) {
+  if (params.zips_explicit && params.zips?.length) {
     geoNotes.push(
       `Explicit ZIP list: ${params.zips.length} ZIPs (Propwire searches each ZIP; results filtered to this list)`,
     );
   } else if (params.center && params.radius_miles) {
     geoNotes.push(
       `Radius search: ${params.radius_miles} mi around ${params.center}` +
-        (params.zip_count ? ` → ${params.zip_count} ZIPs in footprint` : ''),
+        (params.zip_count
+          ? ` → ${params.zip_count} ZIPs in footprint (single Propwire radius pull, not per-ZIP)`
+          : ''),
     );
   }
   if (params.states?.length) {

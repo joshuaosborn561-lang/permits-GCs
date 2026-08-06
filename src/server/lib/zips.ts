@@ -233,7 +233,12 @@ export async function rowsForZips(
 export async function resolveGeography(
   params: ParsedQueryParams,
 ): Promise<GeoResolution> {
-  const explicit = parseZipList(params.zips?.length ? params.zips : params.zips_csv);
+  // Only treat ZIPs as an explicit scrape list when the caller asked for that.
+  // Radius resolution also fills `params.zips` as a footprint — those must not
+  // re-enter this branch on a second resolve pass.
+  const explicit = params.zips_explicit
+    ? parseZipList(params.zips?.length ? params.zips : params.zips_csv)
+    : parseZipList(params.zips_csv);
   if (explicit.length) {
     const zip_rows = await rowsForZips(explicit);
     const states = unique(zip_rows.map((r) => r.state).filter(Boolean));
@@ -324,15 +329,21 @@ export function applyGeoToParams(
     radius_miles: geo.radius_miles,
     states: geo.states,
   };
-  if (geo.mode === 'radius' || (geo.mode === 'zips' && geo.radius_miles)) {
-    next.location_type = 'radius';
-    if (geo.center) next.location_value = geo.center;
-  } else if (geo.mode === 'zips') {
+  if (geo.mode === 'zips') {
+    // Explicit ZIP list — keep location_type=zips so Propwire scrapes per ZIP.
     next.location_type = 'zips';
+    next.zips_explicit = true;
     next.location_value =
       geo.zips.length <= 6
         ? geo.zips.join(', ')
         : `${geo.zips.length} ZIP codes (${geo.zips.slice(0, 3).join(', ')}…)`;
+  } else if (geo.mode === 'radius') {
+    // Radius footprint ZIPs are for reporting / optional post-filter only.
+    next.location_type = 'radius';
+    next.zips_explicit = false;
+    if (geo.center) next.location_value = geo.center;
+  } else {
+    next.zips_explicit = Boolean(params.zips_explicit);
   }
   return next;
 }
