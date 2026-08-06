@@ -52,9 +52,13 @@ export function mountMcpHttp(app: Express): void {
         'pmf_export_csv',
         'pmf_estimate_cost',
       ],
-      prompts: ['pmf_run_commercial_pull'],
-      resources: ['pmf://guide'],
-      note: 'Server sends detailed instructions on initialize. Read pmf://guide for the full operator guide.',
+      prompts: [
+        'pmf_run_commercial_pull',
+        'pmf_check_run_status',
+        'pmf_export_contacts',
+      ],
+      resources: ['pmf://guide', 'pmf://when-to-use'],
+      note: 'On initialize, Claude receives the full operating manual (instructions). Read pmf://guide or pmf://when-to-use for when/how to use this MCP.',
     });
   });
 }
