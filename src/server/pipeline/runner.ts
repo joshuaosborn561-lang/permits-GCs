@@ -10,7 +10,7 @@ import { resolveViaGoogle } from '../services/googleSearch.js';
 import { resolveManyViaLoopnet } from '../services/loopnet.js';
 import { isNameVariant, parseOwnerMailing } from '../services/ownerParse.js';
 import { pullPropwire } from '../services/propwire.js';
-import type { PropertyRecord, RunProgress } from '../types.js';
+import type { GeocodedLocation, PropertyRecord, RunProgress } from '../types.js';
 import { syncContactsToScrapeLeads } from '../services/scrapeLeadsSync.js';
 import {
   getRun,
@@ -127,88 +127,128 @@ async function runPipeline(runId: string): Promise<void> {
   updateProgress(runId, progress, breakdown, properties);
   await persistProperties(runId, properties);
 
-  // Step 3 — LoopNet (mode: off | batched | per_property)
-  updateRun(runId, {
-    current_step:
-      config.loopnetMode === 'off' ? 'step_3_loopnet_skipped' : 'step_3_loopnet',
+  await startPipelineFromOwnerParse({
+    runId,
+    properties,
+    unresolvedAfterCo,
+    progress,
+    breakdown,
+    geo,
   });
+}
 
-  const stillUnresolved: PropertyRecord[] = [];
-  if (unresolvedAfterCo.length) {
-    const loopnetResults = await resolveManyViaLoopnet({
-      properties: unresolvedAfterCo,
-      runId,
-      onProgress: (done, total) => {
-        // Flush every batch so the UI isn't stuck at 0 for an hour.
-        if (done === total || done % Math.max(1, config.loopnetBatchSize) === 0) {
-          bumpCost(progress, breakdown);
-          updateProgress(runId, progress, breakdown, properties);
-        }
-      },
+/**
+ * Continue a run after Propwire + owner/c/o parse (or after loading those
+ * results from Supabase). Used by resume.
+ */
+export async function startPipelineFromOwnerParse(opts: {
+  runId: string;
+  properties: PropertyRecord[];
+  unresolvedAfterCo: PropertyRecord[];
+  progress: RunProgress;
+  breakdown: Record<string, number>;
+  geo: GeocodedLocation;
+  skipLoopnet?: boolean;
+  skipGoogle?: boolean;
+}): Promise<void> {
+  const { runId, properties, unresolvedAfterCo, geo } = opts;
+  let { progress, breakdown } = opts;
+
+  // Step 3 — LoopNet (mode: off | batched | per_property)
+  let stillUnresolved: PropertyRecord[] = [];
+  if (opts.skipLoopnet) {
+    stillUnresolved = [...unresolvedAfterCo];
+  } else {
+    updateRun(runId, {
+      current_step:
+        config.loopnetMode === 'off' ? 'step_3_loopnet_skipped' : 'step_3_loopnet',
     });
 
-    for (const prop of unresolvedAfterCo) {
-      const result = loopnetResults.get(prop.id);
-      if (!result || result.skipped) {
-        stillUnresolved.push(prop);
+    if (unresolvedAfterCo.length) {
+      const loopnetResults = await resolveManyViaLoopnet({
+        properties: unresolvedAfterCo,
+        runId,
+        onProgress: (done, total) => {
+          if (done === total || done % Math.max(1, config.loopnetBatchSize) === 0) {
+            bumpCost(progress, breakdown);
+            updateProgress(runId, progress, breakdown, properties);
+          }
+        },
+      });
+
+      for (const prop of unresolvedAfterCo) {
+        const result = loopnetResults.get(prop.id);
+        if (!result || result.skipped) {
+          stillUnresolved.push(prop);
+          continue;
+        }
+        ({ breakdown } = addCost(breakdown, 'loopnet', result.cost));
+        prop.raw_loopnet_data = result.raw;
+
+        if (result.found && result.property_manager_company) {
+          prop.property_manager_company = result.property_manager_company;
+          prop.pm_confidence = 'medium';
+          prop.pm_source = 'LoopNet listing';
+          prop.status = 'pm_resolved';
+          progress.resolved_loopnet += 1;
+        } else {
+          stillUnresolved.push(prop);
+        }
+        bumpCost(progress, breakdown);
+      }
+    }
+
+    updateProgress(runId, progress, breakdown, properties);
+    await persistProperties(runId, properties);
+  }
+
+  // Step 4 — Google (hard cap)
+  if (!opts.skipGoogle) {
+    updateRun(runId, { current_step: 'step_4_google' });
+    for (const prop of stillUnresolved) {
+      if (progress.google_searches_used >= config.googleSearchHardCap) {
+        prop.pm_confidence = 'unresolved';
+        prop.pm_source = 'google search cap reached';
+        prop.status = 'pm_unresolved';
+        progress.google_cap_reached += 1;
+        progress.unresolved += 1;
         continue;
       }
-      ({ breakdown } = addCost(breakdown, 'loopnet', result.cost));
-      prop.raw_loopnet_data = result.raw;
+
+      const result = await resolveViaGoogle({ property: prop, runId });
+      progress.google_searches_used += 1;
+      ({ breakdown } = addCost(breakdown, 'google_pm', result.cost));
+      prop.raw_google_data = result.raw;
 
       if (result.found && result.property_manager_company) {
         prop.property_manager_company = result.property_manager_company;
-        prop.pm_confidence = 'medium';
-        prop.pm_source = 'LoopNet listing';
+        prop.pm_confidence = 'low';
+        prop.pm_source = 'Google search';
         prop.status = 'pm_resolved';
-        progress.resolved_loopnet += 1;
+        progress.resolved_google += 1;
       } else {
-        stillUnresolved.push(prop);
+        prop.pm_confidence = 'unresolved';
+        prop.pm_source = null;
+        prop.status = 'pm_unresolved';
+        progress.unresolved += 1;
       }
       bumpCost(progress, breakdown);
+      if (progress.google_searches_used % 5 === 0) {
+        updateProgress(runId, progress, breakdown, properties);
+      }
+    }
+
+    updateProgress(runId, progress, breakdown, properties);
+    await persistProperties(runId, properties);
+  } else {
+    for (const prop of stillUnresolved) {
+      if (!prop.pm_confidence) {
+        prop.pm_confidence = 'unresolved';
+        prop.status = 'pm_unresolved';
+        progress.unresolved += 1;
+      }
     }
   }
-
-  updateProgress(runId, progress, breakdown, properties);
-  await persistProperties(runId, properties);
-
-  // Step 4 — Google (hard cap)
-  updateRun(runId, { current_step: 'step_4_google' });
-  for (const prop of stillUnresolved) {
-    if (progress.google_searches_used >= config.googleSearchHardCap) {
-      prop.pm_confidence = 'unresolved';
-      prop.pm_source = 'google search cap reached';
-      prop.status = 'pm_unresolved';
-      progress.google_cap_reached += 1;
-      progress.unresolved += 1;
-      continue;
-    }
-
-    const result = await resolveViaGoogle({ property: prop, runId });
-    progress.google_searches_used += 1;
-    ({ breakdown } = addCost(breakdown, 'google_pm', result.cost));
-    prop.raw_google_data = result.raw;
-
-    if (result.found && result.property_manager_company) {
-      prop.property_manager_company = result.property_manager_company;
-      prop.pm_confidence = 'low';
-      prop.pm_source = 'Google search';
-      prop.status = 'pm_resolved';
-      progress.resolved_google += 1;
-    } else {
-      prop.pm_confidence = 'unresolved';
-      prop.pm_source = null;
-      prop.status = 'pm_unresolved';
-      progress.unresolved += 1;
-    }
-    bumpCost(progress, breakdown);
-    if (progress.google_searches_used % 5 === 0) {
-      updateProgress(runId, progress, breakdown, properties);
-    }
-  }
-
-  updateProgress(runId, progress, breakdown, properties);
-  await persistProperties(runId, properties);
 
   // Step 5 — contact enrichment (dedupe by PM company)
   updateRun(runId, { current_step: 'step_5_contacts' });
@@ -262,7 +302,6 @@ async function runPipeline(runId: string): Promise<void> {
   await persistProperties(runId, properties);
   await persistContacts(contacts);
 
-  // Also dump into public.scrape_leads on the Google Maps leads project
   updateRun(runId, { current_step: 'sync_scrape_leads' });
   const synced = await syncContactsToScrapeLeads(getRun(runId)!);
   progress.contacts_synced_to_scrape_leads = synced;

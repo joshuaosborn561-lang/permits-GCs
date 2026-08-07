@@ -8,6 +8,7 @@ import {
   publicRunView,
   updateRun,
 } from '../pipeline/jobStore.js';
+import { resumeRun } from '../pipeline/resume.js';
 import { startPipeline } from '../pipeline/runner.js';
 import { planMarket } from '../services/planMarket.js';
 import type { ContactExportRow, ParsedQueryParams } from '../types.js';
@@ -139,6 +140,22 @@ runsRouter.post('/:id/confirm', async (req, res) => {
     res.json({ run: publicRunView(getRun(run.id)!) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'confirm failed' });
+  }
+});
+
+/** Resume a stopped run from Supabase (skip Propwire / c/o; continue PM + contacts). */
+runsRouter.post('/:id/resume', async (req, res) => {
+  try {
+    const fromRaw = String(req.body?.from ?? 'loopnet');
+    const from =
+      fromRaw === 'google' || fromRaw === 'contacts' || fromRaw === 'loopnet'
+        ? fromRaw
+        : 'loopnet';
+    const result = await resumeRun({ runId: req.params.id, from });
+    res.json(result);
+  } catch (err) {
+    console.error('[resume]', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'resume failed' });
   }
 });
 
