@@ -1,14 +1,13 @@
 import { config } from '../config.js';
 import { addCost, round6 } from '../lib/costs.js';
 import { geocodeLocation } from '../lib/geocode.js';
-import { mapPool } from '../lib/retry.js';
 import {
   contactToRecord,
   enrichPmCompany,
   type CachedContact,
 } from '../services/contactEnrichment.js';
 import { resolveViaGoogle } from '../services/googleSearch.js';
-import { resolveViaLoopnet } from '../services/loopnet.js';
+import { resolveManyViaLoopnet } from '../services/loopnet.js';
 import { isNameVariant, parseOwnerMailing } from '../services/ownerParse.js';
 import { pullPropwire } from '../services/propwire.js';
 import type { PropertyRecord, RunProgress } from '../types.js';
@@ -128,14 +127,32 @@ async function runPipeline(runId: string): Promise<void> {
   updateProgress(runId, progress, breakdown, properties);
   await persistProperties(runId, properties);
 
-  // Step 3 — LoopNet
-  updateRun(runId, { current_step: 'step_3_loopnet' });
+  // Step 3 — LoopNet (mode: off | batched | per_property)
+  updateRun(runId, {
+    current_step:
+      config.loopnetMode === 'off' ? 'step_3_loopnet_skipped' : 'step_3_loopnet',
+  });
 
-  const loopnetOutcomes = await mapPool(
-    unresolvedAfterCo,
-    Math.min(config.maxConcurrentApify, 3),
-    async (prop) => {
-      const result = await resolveViaLoopnet({ property: prop, runId });
+  const stillUnresolved: PropertyRecord[] = [];
+  if (unresolvedAfterCo.length) {
+    const loopnetResults = await resolveManyViaLoopnet({
+      properties: unresolvedAfterCo,
+      runId,
+      onProgress: (done, total) => {
+        // Flush every batch so the UI isn't stuck at 0 for an hour.
+        if (done === total || done % Math.max(1, config.loopnetBatchSize) === 0) {
+          bumpCost(progress, breakdown);
+          updateProgress(runId, progress, breakdown, properties);
+        }
+      },
+    });
+
+    for (const prop of unresolvedAfterCo) {
+      const result = loopnetResults.get(prop.id);
+      if (!result || result.skipped) {
+        stillUnresolved.push(prop);
+        continue;
+      }
       ({ breakdown } = addCost(breakdown, 'loopnet', result.cost));
       prop.raw_loopnet_data = result.raw;
 
@@ -145,14 +162,12 @@ async function runPipeline(runId: string): Promise<void> {
         prop.pm_source = 'LoopNet listing';
         prop.status = 'pm_resolved';
         progress.resolved_loopnet += 1;
-        bumpCost(progress, breakdown);
-        return false;
+      } else {
+        stillUnresolved.push(prop);
       }
       bumpCost(progress, breakdown);
-      return true;
-    },
-  );
-  const stillUnresolved = unresolvedAfterCo.filter((_, i) => loopnetOutcomes[i]);
+    }
+  }
 
   updateProgress(runId, progress, breakdown, properties);
   await persistProperties(runId, properties);

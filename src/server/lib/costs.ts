@@ -9,9 +9,14 @@ export function estimateCost(params: ParsedQueryParams): CostEstimate {
   const step2 = n * COST.openaiParsePerRecord;
   // Assume ~50% lack c/o and go to LoopNet (configurable)
   const loopnetRecords = Math.round(n * fallout);
-  const step3 = loopnetRecords * COST.loopnetPerRecord;
+  const step3 = estimateLoopnetStepCost(loopnetRecords);
   // Of LoopNet fallout, assume another 50% need Google, capped
-  const googleQueries = Math.min(config.googleSearchHardCap, Math.round(loopnetRecords * 0.5));
+  // When LoopNet is off, more records fall through to Google.
+  const googleShare = config.loopnetMode === 'off' ? 1 : 0.5;
+  const googleQueries = Math.min(
+    config.googleSearchHardCap,
+    Math.round(loopnetRecords * googleShare),
+  );
   const step4 = googleQueries * COST.googleSearchPerQuery;
 
   const total = step1 + step2 + step3 + step4;
@@ -51,16 +56,54 @@ export function estimateCost(params: ParsedQueryParams): CostEstimate {
     total_high: round6(total + contactHigh),
     assumptions: [
       ...geoNotes,
+      `LoopNet mode: ${config.loopnetMode}` +
+        (config.loopnetMode === 'batched'
+          ? ` (batch size ${config.loopnetBatchSize}, details=${config.loopnetIncludeDetails})`
+          : ''),
       `LoopNet fallout assumption: ${(fallout * 100).toFixed(0)}% of records (LOOPNET_FALLOUT_PCT)`,
+      loopnetModeAssumption(),
       `Google search capped at ${config.googleSearchHardCap} queries`,
       `Propwire full detail: $${COST.propwirePerRecord}/record`,
       `OpenAI nano parse: ~$${COST.openaiParsePerRecord}/record`,
-      `LoopNet: $${COST.loopnetPerRecord}/record`,
       `Google search: $${COST.googleSearchPerQuery}/query`,
     ],
     disclaimer:
       'Apify platform minimum fees and OpenAI API costs are billed separately by those platforms. This is an estimate, not an invoice.',
   };
+}
+
+function estimateLoopnetStepCost(loopnetRecords: number): number {
+  if (loopnetRecords <= 0) return 0;
+  if (config.loopnetMode === 'off') return 0;
+  if (config.loopnetMode === 'per_property') {
+    // Real-world observed ~$0.10–0.13/addr when detail unblocker fires.
+    // Estimate uses start + ~2 results; warn via assumptions.
+    return (
+      loopnetRecords *
+      (COST.loopnetActorStart + 2 * COST.loopnetResultEvent)
+    );
+  }
+  // batched: one actor start per batch + ~1.5 result events per address
+  const batches = Math.ceil(loopnetRecords / Math.max(1, config.loopnetBatchSize));
+  return (
+    batches * COST.loopnetActorStart +
+    loopnetRecords * 1.5 * COST.loopnetResultEvent
+  );
+}
+
+function loopnetModeAssumption(): string {
+  if (config.loopnetMode === 'off') {
+    return 'LoopNet DISABLED (LOOPNET_MODE=off) — unresolved c/o rows go straight to Google';
+  }
+  if (config.loopnetMode === 'per_property') {
+    return (
+      'LoopNet per_property mode is EXPENSIVE (~$0.10+/address when App Check fails and detail unblocker bills $0.05/page). Prefer LOOPNET_MODE=batched or off.'
+    );
+  }
+  return (
+    `LoopNet batched: ~$${COST.loopnetActorStart}/batch start + $${COST.loopnetResultEvent}/result; ` +
+    `details ${config.loopnetIncludeDetails ? 'ON (can add $0.05/page)' : 'OFF (recommended)'}`
+  );
 }
 
 export function round6(n: number): number {
