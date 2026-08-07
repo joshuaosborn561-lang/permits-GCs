@@ -68,7 +68,13 @@ After connect, Claude should already see the operating manual via initialize `in
 
 ## Remote HTTP (Railway)
 
-- `POST https://workspace-production-4702.up.railway.app/mcp` (no auth)
-- `GET  https://workspace-production-4702.up.railway.app/mcp/health`
+- MCP endpoint: `https://workspace-production-4702.up.railway.app/mcp` (no auth)
+- Health: `https://workspace-production-4702.up.railway.app/mcp/health`
 
-For Cursor / Claude with remote MCP, point the client at that `/mcp` URL. The same initialize instructions and resources apply.
+**Claude.ai custom connector:** use that `/mcp` URL (Streamable HTTP). The server is **stateful**:
+
+1. `POST /mcp` `initialize` → response includes `mcp-session-id`
+2. Optional `GET /mcp` with `mcp-session-id` for the SSE notification stream
+3. Further `POST /mcp` calls must include `mcp-session-id`
+
+If Claude fails to connect, check `/mcp/health` for `"sessionMode":"stateful"` and `"supportsGetSse":true`. Older builds returned HTTP 405 on GET and broke Claude connectors.
