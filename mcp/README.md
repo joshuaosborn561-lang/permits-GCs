@@ -78,3 +78,5 @@ After connect, Claude should already see the operating manual via initialize `in
 3. Further `POST /mcp` calls must include `mcp-session-id`
 
 If Claude fails to connect, check `/mcp/health` for `"sessionMode":"stateful"` and `"supportsGetSse":true`. Older builds returned HTTP 405 on GET and broke Claude connectors.
+
+**Authless / no OAuth:** leave OAuth Client ID blank. Discovery paths (`/.well-known/oauth-*`, `/register`) return **404 JSON** on purpose so Claude treats the server as public. Do not point Claude at the site root HTML.

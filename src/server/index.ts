@@ -43,10 +43,40 @@ app.use('/api/runs', runsRouter);
 app.use('/api/shovels/contractors', shovelsContractorsRouter);
 mountMcpHttp(app);
 
+/**
+ * Claude custom connectors probe OAuth discovery before treating a server as
+ * authless. They expect clean 404s on these paths. Our SPA catch-all used to
+ * return 200 HTML here, which made Claude attempt Dynamic Client Registration
+ * and fail with "Couldn't register with … sign-in service".
+ */
+app.use((req, res, next) => {
+  const p = req.path;
+  if (
+    p.startsWith('/.well-known/oauth-authorization-server') ||
+    p.startsWith('/.well-known/openid-configuration') ||
+    p.startsWith('/.well-known/oauth-protected-resource') ||
+    p === '/register' ||
+    p === '/oauth/register'
+  ) {
+    res.status(404).json({
+      error: 'not_found',
+      message:
+        'This MCP server does not use OAuth. Connect as an authless / no-auth custom connector (leave Client ID blank).',
+    });
+    return;
+  }
+  next();
+});
+
 const clientDist = path.resolve(__dirname, '../../client/dist');
 app.use(express.static(clientDist));
 app.use((req, res, next) => {
-  if (req.method !== 'GET' || req.path.startsWith('/api/') || req.path.startsWith('/mcp')) {
+  if (
+    req.method !== 'GET' ||
+    req.path.startsWith('/api/') ||
+    req.path.startsWith('/mcp') ||
+    req.path.startsWith('/.well-known/')
+  ) {
     return next();
   }
   res.sendFile(path.join(clientDist, 'index.html'), (err) => {
