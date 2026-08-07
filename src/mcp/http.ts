@@ -51,6 +51,11 @@ export function mountMcpHttp(app: Express): void {
         'pmf_get_results',
         'pmf_export_csv',
         'pmf_estimate_cost',
+        'pmf_shovels_contractors_summary',
+        'pmf_shovels_contractors_query',
+        'pmf_shovels_contractors_sample',
+        'pmf_shovels_contractors_get',
+        'pmf_shovels_contractors_export_csv',
       ],
       prompts: [
         'pmf_run_commercial_pull',
@@ -58,7 +63,13 @@ export function mountMcpHttp(app: Express): void {
         'pmf_export_contacts',
       ],
       resources: ['pmf://guide', 'pmf://when-to-use'],
-      note: 'On initialize, Claude receives the full operating manual (instructions). Read pmf://guide or pmf://when-to-use for when/how to use this MCP.',
+      http: {
+        shovels_contractors_summary: '/api/shovels/contractors/summary',
+        shovels_contractors_query: '/api/shovels/contractors',
+        shovels_contractors_sample: '/api/shovels/contractors/sample',
+        shovels_contractors_export: '/api/shovels/contractors/export.csv',
+      },
+      note: 'On initialize, Claude receives the full operating manual (instructions). Read pmf://guide or pmf://when-to-use for when/how to use this MCP. Shovels commercial contractor contacts are a cached local dataset (free to query).',
     });
   });
 }

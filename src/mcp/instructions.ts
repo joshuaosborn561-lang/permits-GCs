@@ -15,6 +15,7 @@ USE THIS MCP when the user wants any of:
 - Decision makers at those PM firms (Property Manager, Regional Manager, Director/VP Ops, etc.)
 - An outreach list / CSV of those contacts for cold outbound (Smartlead later)
 - Status, cost, or results of a PM-finder run already started here
+- **Cached Shovels commercial contractor contacts** for Dallas / Fort Worth / Rockwall County (company name, phone, email) — free local dataset, no Shovels API spend
 
 Geography rules:
 - Optional \`zips\` (comma-separated) on \`pmf_parse_query\` / \`pmf_estimate_cost\` wins outright and is persisted for \`pmf_confirm_run\`.
@@ -84,6 +85,16 @@ Use language like:
 | pmf_list_runs | No | Find past runs |
 | pmf_get_results | No | Contact rows |
 | pmf_export_csv | No | Full CSV text |
+| pmf_shovels_contractors_summary | No | Cached Shovels GC counts/fill (no rows) |
+| pmf_shovels_contractors_query | No | Paginated Shovels GC contacts (max 50/page) |
+| pmf_shovels_contractors_sample | No | ≤20 random Shovels GC rows for QA |
+| pmf_shovels_contractors_get | No | One Shovels GC by id |
+| pmf_shovels_contractors_export_csv | No | Filtered Shovels GC CSV (cap 5000) |
+
+### Shovels contractor dataset rules
+- Source: commercial contractors with recent permit activity (Dallas, Fort Worth, Rockwall County).
+- **Summary tools return counts. Query/sample paginate. Never dump all ~6k rows into the model context.**
+- License note: Shovels data is licensed for internal business use; agency/client-list use may need vendor confirmation before scale.
 
 ## Prompts available
 - \`pmf_run_commercial_pull\` — full estimate→approve→run→results flow

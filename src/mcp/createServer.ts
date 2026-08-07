@@ -13,6 +13,14 @@ import {
 } from '../server/pipeline/jobStore.js';
 import { startPipeline } from '../server/pipeline/runner.js';
 import { planMarket } from '../server/services/planMarket.js';
+import {
+  contractorsToCsv,
+  getShovelsContractor,
+  loadShovelsContractors,
+  queryShovelsContractors,
+  sampleShovelsContractors,
+  shovelsContractorsSummary,
+} from '../server/services/shovelsContractors.js';
 import type { ContactExportRow, ParsedQueryParams } from '../server/types.js';
 import {
   GUIDE_MARKDOWN,
@@ -50,11 +58,12 @@ function healthPayload() {
     product:
       'SalesGlider commercial property owner → PM company → decision-maker contacts for outbound.',
     when_to_use:
-      'Commercial property owners/landlords/PMs/decision-maker contacts in a US city, county, or radius; or status/CSV of an existing PM-finder run.',
+      'Commercial property owners/landlords/PMs/decision-maker contacts in a US city, county, or radius; status/CSV of an existing PM-finder run; or querying the cached Shovels commercial contractor contact dataset (Dallas / Fort Worth / Rockwall).',
     when_not_to_use:
       'Google Maps local-business scrapes, residential-only lists, Smartlead/CRM sends, LLC→person resolution.',
     how_to_use:
-      'Read pmf://guide (or pmf://when-to-use). Workflow: pmf_health → pmf_parse_query → (pmf_resolve_location if ambiguous) → show estimate → wait for explicit user approval → pmf_confirm_run(confirm_spend=true) → poll pmf_get_run → pmf_get_results / pmf_export_csv. Never confirm without approval.',
+      'Read pmf://guide (or pmf://when-to-use). Property pipeline: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV. Shovels contractors (cached, free): pmf_shovels_contractors_summary → query/sample (paginated; never dump all rows into chat).',
+    shovels_contractors_loaded: loadShovelsContractors().length,
   };
 }
 
@@ -689,6 +698,180 @@ Follow this exact workflow:
         },
       ],
     }),
+  );
+
+  const placeEnum = z
+    .enum(['Dallas', 'Fort_Worth', 'Rockwall_County'])
+    .optional()
+    .describe('Filter to a pull geography tag on the cached dataset');
+
+  server.registerTool(
+    'pmf_shovels_contractors_summary',
+    {
+      title: 'Shovels commercial contractors — summary',
+      description: `WHEN TO USE: User asks about the cached Shovels commercial contractor list (Dallas / Fort Worth / Rockwall County), counts, or contact fill rates.
+WHAT IT DOES: Returns summary counts only (unique contractors, by place, phone/email fill). Free. Does NOT call Shovels API.
+WHEN NOT TO USE: For browsing actual company rows — use pmf_shovels_contractors_query or pmf_shovels_contractors_sample.
+RULE: Never dump the full ~6k list into chat; summarize from this tool.`,
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => jsonResult(shovelsContractorsSummary()),
+  );
+
+  server.registerTool(
+    'pmf_shovels_contractors_query',
+    {
+      title: 'Shovels commercial contractors — paginated query',
+      description: `WHEN TO USE: Search/filter the cached Shovels commercial contractor contacts (name, company, place, has email/phone).
+WHAT IT DOES: Returns one page of matching rows (default 25, max 50) plus total/page metadata. Free. Local dataset only.
+WHEN NOT TO USE: For counts only → summary tool. For a random QA peek → sample tool.
+RULE: Paginate. Do not loop pages to reconstruct the full dump in the model context.`,
+      inputSchema: {
+        q: z
+          .string()
+          .optional()
+          .describe('Search name, business, email, phone, city, or place tag'),
+        place: placeEnum,
+        city: z.string().optional().describe('Address city filter, e.g. "FORT WORTH"'),
+        state: z.string().optional().describe('Address state, e.g. "TX"'),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+        page: z.number().int().min(1).optional().describe('1-based page (default 1)'),
+        page_size: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe('Rows per page (default 25, max 50)'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) =>
+      jsonResult(
+        queryShovelsContractors({
+          q: args.q,
+          place: args.place,
+          city: args.city,
+          state: args.state,
+          has_email: args.has_email,
+          has_phone: args.has_phone,
+          has_website: args.has_website,
+          page: args.page,
+          page_size: args.page_size,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    'pmf_shovels_contractors_sample',
+    {
+      title: 'Shovels commercial contractors — random sample',
+      description: `WHEN TO USE: Spot-check data quality of the cached Shovels contractor contacts.
+WHAT IT DOES: Returns up to 20 random matching rows. Free.
+WHEN NOT TO USE: For exhaustive search — use the paginated query tool.`,
+      inputSchema: {
+        n: z.number().int().min(1).max(20).optional().describe('Sample size (default 20, max 20)'),
+        q: z.string().optional(),
+        place: placeEnum,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) =>
+      jsonResult(
+        sampleShovelsContractors(args.n ?? 20, {
+          q: args.q,
+          place: args.place,
+          city: args.city,
+          state: args.state,
+          has_email: args.has_email,
+          has_phone: args.has_phone,
+          has_website: args.has_website,
+        }),
+      ),
+  );
+
+  server.registerTool(
+    'pmf_shovels_contractors_get',
+    {
+      title: 'Shovels commercial contractor — get by id',
+      description: `WHEN TO USE: Look up one cached contractor by Shovels id.
+WHAT IT DOES: Returns a single row or not-found. Free.`,
+      inputSchema: {
+        id: z.string().min(1).describe('Shovels contractor id'),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ id }) => {
+      const row = getShovelsContractor(id);
+      if (!row) return errorResult(`Contractor not found: ${id}`);
+      return jsonResult(row);
+    },
+  );
+
+  server.registerTool(
+    'pmf_shovels_contractors_export_csv',
+    {
+      title: 'Shovels commercial contractors — filtered CSV',
+      description: `WHEN TO USE: User wants a CSV file of the cached Shovels commercial contractors (optionally filtered).
+WHAT IT DOES: Returns CSV text for matching rows, capped at 5000. Free. Local dataset only.
+RULE: Prefer filters (place/has_email/q). Do not paste the entire CSV into chat — give a short summary and offer the CSV payload for download/save.`,
+      inputSchema: {
+        q: z.string().optional(),
+        place: placeEnum,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      const pageSize = 50;
+      let page = 1;
+      const items = [];
+      for (;;) {
+        const batch = queryShovelsContractors({
+          q: args.q,
+          place: args.place,
+          city: args.city,
+          state: args.state,
+          has_email: args.has_email,
+          has_phone: args.has_phone,
+          has_website: args.has_website,
+          page,
+          page_size: pageSize,
+        });
+        items.push(...batch.items);
+        if (page >= batch.total_pages || items.length >= 5000) break;
+        page += 1;
+      }
+      const capped = items.slice(0, 5000);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              {
+                total_matching: capped.length,
+                capped_at: 5000,
+                csv: contractorsToCsv(capped),
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
   );
 
   return server;

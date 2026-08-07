@@ -19,6 +19,22 @@ Built for SalesGlider Growth outbound. Data lands in a dedicated Supabase schema
 
 The UI requires an **explicit confirm** after showing a cost estimate. Ambiguous locations (e.g. city without state) must be disambiguated first.
 
+### Cached Shovels commercial contractors (MCP)
+
+A local snapshot of **~6.1k unique commercial contractors** (Dallas / Fort Worth / Rockwall County, permit window in `data/shovels_commercial_contractors/summary.json`) is shipped in-repo and exposed over MCP + HTTP. Querying it does **not** call the Shovels API.
+
+| MCP tool | Behavior |
+|----------|----------|
+| `pmf_shovels_contractors_summary` | Counts + contact fill only |
+| `pmf_shovels_contractors_query` | Paginated rows (max 50/page) |
+| `pmf_shovels_contractors_sample` | ≤20 random rows for QA |
+| `pmf_shovels_contractors_get` | One row by id |
+| `pmf_shovels_contractors_export_csv` | Filtered CSV (cap 5000) |
+
+HTTP mirrors: `/api/shovels/contractors/summary`, `/api/shovels/contractors`, `/sample`, `/export.csv`.
+
+**License note:** Shovels licenses data for internal business use. Agency/client-list use may need explicit vendor confirmation before scale.
+
 ## Stack
 
 - Node.js + Express + TypeScript
