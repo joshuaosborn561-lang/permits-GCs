@@ -13,6 +13,13 @@ function bool(name: string, fallback = false): boolean {
   return raw === '1' || raw === 'true' || raw === 'yes';
 }
 
+function parseLoopnetMode(raw: string | undefined): 'off' | 'batched' | 'per_property' {
+  const v = (raw ?? 'batched').toLowerCase().trim();
+  if (v === 'off' || v === 'false' || v === '0' || v === 'disabled') return 'off';
+  if (v === 'per_property' || v === 'per-property' || v === 'legacy') return 'per_property';
+  return 'batched';
+}
+
 export const config = {
   port: num('PORT', 8080),
   nodeEnv: process.env.NODE_ENV ?? 'development',
@@ -37,6 +44,18 @@ export const config = {
   leadmagicApiKey: process.env.LEADMAGIC_API_KEY ?? '',
 
   loopnetFalloutPct: num('LOOPNET_FALLOUT_PCT', 0.5),
+  /**
+   * LoopNet PM lookup strategy:
+   * - off: skip LoopNet (c/o → Google only). $0 LoopNet spend.
+   * - batched: many addresses per actor run, details OFF (cheap default).
+   * - per_property: one actor run per address (EXPENSIVE — can be ~$0.10+/addr).
+   */
+  loopnetMode: parseLoopnetMode(process.env.LOOPNET_MODE),
+  loopnetBatchSize: num('LOOPNET_BATCH_SIZE', 50),
+  /** Detail pages can bill ~$0.05 each via unblocker — keep false unless needed. */
+  loopnetIncludeDetails: bool('LOOPNET_INCLUDE_DETAILS', false),
+  /** Hard cap on paid website-unblocker requests per LoopNet actor run. */
+  loopnetMaxUnblockerRequests: num('LOOPNET_MAX_UNBLOCKER_REQUESTS', 5),
   googleSearchHardCap: num('GOOGLE_SEARCH_HARD_CAP', 5000),
   propwireBatchSize: num('PROPWIRE_BATCH_SIZE', 50),
   maxConcurrentApify: num('MAX_CONCURRENT_APIFY', 3),
@@ -46,7 +65,14 @@ export const config = {
 export const COST = {
   propwirePerRecord: 0.00155,
   openaiParsePerRecord: 0.001,
+  /** Legacy per-record estimate; real PPE is start + result events (see below). */
   loopnetPerRecord: 0.0015,
+  /** memo23/loopnet-scraper-ppe Actor Start (~$0.007/GB, min 1). */
+  loopnetActorStart: 0.007,
+  /** memo23/loopnet-scraper-ppe result event. */
+  loopnetResultEvent: 0.0015,
+  /** Detail-page unblocker event — avoid unless LOOPNET_INCLUDE_DETAILS=true. */
+  loopnetDetailUnblocker: 0.05,
   googleSearchPerQuery: 0.0025,
   /** getleads unlimited plan — $0 marginal */
   getleadsPerLookup: 0,

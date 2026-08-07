@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { estimateCost } from '../lib/costs.js';
+import { haversineMiles } from '../lib/zips.js';
 import {
   createRun,
   getRun,
@@ -7,8 +8,9 @@ import {
   publicRunView,
   updateRun,
 } from '../pipeline/jobStore.js';
+import { resumeRun } from '../pipeline/resume.js';
 import { startPipeline } from '../pipeline/runner.js';
-import { parseNaturalLanguageQuery } from '../services/parseQuery.js';
+import { planMarket } from '../services/planMarket.js';
 import type { ContactExportRow, ParsedQueryParams } from '../types.js';
 
 export const runsRouter = Router();
@@ -22,16 +24,31 @@ runsRouter.post('/parse', async (req, res) => {
       return;
     }
 
-    const parsed = await parseNaturalLanguageQuery(query);
-    const estimate = estimateCost(parsed);
-    const run = createRun({ query, params: parsed, estimate });
+    const planned = await planMarket({
+      query,
+      zips: req.body?.zips,
+      center: req.body?.center,
+      radius_miles: req.body?.radius_miles != null ? Number(req.body.radius_miles) : undefined,
+      exclude_categories: req.body?.exclude_categories,
+      max_records: req.body?.max_records != null ? Number(req.body.max_records) : undefined,
+    });
+    const run = createRun({
+      query,
+      params: planned.parsed,
+      estimate: planned.estimate,
+    });
 
     res.json({
       run: publicRunView(run),
-      parsed,
-      estimate,
+      parsed: planned.parsed,
+      estimate: planned.estimate,
+      zip_count: planned.zip_count,
+      states: planned.states,
+      center: planned.center,
+      radius_miles: planned.radius_miles,
+      geo_mode: planned.mode,
       needs_confirmation: true,
-      ambiguous: Boolean(parsed.ambiguous),
+      ambiguous: Boolean(planned.parsed.ambiguous),
     });
   } catch (err) {
     console.error('[parse]', err);
@@ -53,22 +70,35 @@ runsRouter.post('/:id/resolve-location', async (req, res) => {
       return;
     }
 
-    const params: ParsedQueryParams = {
-      ...run.parsed_params,
-      location_value,
-      ambiguous: false,
-      ambiguity_options: [],
-      ambiguity_reason: null,
-    };
-    const estimate = estimateCost(params);
+    const planned = await planMarket({
+      params: {
+        ...run.parsed_params,
+        location_value,
+        center:
+          run.parsed_params.location_type === 'radius' || run.parsed_params.center
+            ? location_value
+            : run.parsed_params.center,
+        ambiguous: false,
+        ambiguity_options: [],
+        ambiguity_reason: null,
+      },
+    });
     const updated = updateRun(run.id, {
-      parsed_params: params,
-      total_cost_estimate: estimate.total_high,
-      cost_estimate_detail: estimate,
+      parsed_params: planned.parsed,
+      total_cost_estimate: planned.estimate.total_high,
+      cost_estimate_detail: planned.estimate,
       status: 'awaiting_confirmation',
     });
 
-    res.json({ run: publicRunView(updated), parsed: params, estimate });
+    res.json({
+      run: publicRunView(updated),
+      parsed: planned.parsed,
+      estimate: planned.estimate,
+      zip_count: planned.zip_count,
+      states: planned.states,
+      center: planned.center,
+      radius_miles: planned.radius_miles,
+    });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'resolve failed' });
   }
@@ -110,6 +140,22 @@ runsRouter.post('/:id/confirm', async (req, res) => {
     res.json({ run: publicRunView(getRun(run.id)!) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'confirm failed' });
+  }
+});
+
+/** Resume a stopped run from Supabase (skip Propwire / c/o; continue PM + contacts). */
+runsRouter.post('/:id/resume', async (req, res) => {
+  try {
+    const fromRaw = String(req.body?.from ?? 'loopnet');
+    const from =
+      fromRaw === 'google' || fromRaw === 'contacts' || fromRaw === 'loopnet'
+        ? fromRaw
+        : 'loopnet';
+    const result = await resumeRun({ runId: req.params.id, from });
+    res.json(result);
+  } catch (err) {
+    console.error('[resume]', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : 'resume failed' });
   }
 });
 
@@ -173,7 +219,21 @@ runsRouter.get('/:id/export.csv', (req, res) => {
     return;
   }
 
-  const rows = buildExportRows(run);
+  let rows = buildExportRows(run);
+  const center = typeof req.query.center === 'string' ? req.query.center : '';
+  const radiusMiles = req.query.radius_miles != null ? Number(req.query.radius_miles) : NaN;
+  if (center && Number.isFinite(radiusMiles) && radiusMiles > 0) {
+    const coord = center.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+    if (coord) {
+      const lat = Number(coord[1]);
+      const lng = Number(coord[2]);
+      rows = rows.filter((r) => {
+        if (r.latitude == null || r.longitude == null) return false;
+        return haversineMiles(lat, lng, r.latitude, r.longitude) <= radiusMiles;
+      });
+    }
+  }
+
   const headers: (keyof ContactExportRow)[] = [
     'contact_name',
     'contact_title',
@@ -191,6 +251,8 @@ runsRouter.get('/:id/export.csv', (req, res) => {
     'city',
     'state',
     'zip',
+    'latitude',
+    'longitude',
   ];
 
   const lines = [
@@ -232,6 +294,8 @@ function buildExportRows(run: ReturnType<typeof getRun> & object): ContactExport
         city: p?.city ?? null,
         state: p?.state ?? null,
         zip: p?.zip ?? null,
+        latitude: p?.latitude ?? null,
+        longitude: p?.longitude ?? null,
       };
     });
   }
@@ -255,12 +319,14 @@ function buildExportRows(run: ReturnType<typeof getRun> & object): ContactExport
       city: p.city,
       state: p.state,
       zip: p.zip,
+      latitude: p.latitude,
+      longitude: p.longitude,
     };
   });
 }
 
-function csvEscape(value: string | null | undefined): string {
-  const s = value ?? '';
+function csvEscape(value: string | number | null | undefined): string {
+  const s = value == null ? '' : String(value);
   if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }

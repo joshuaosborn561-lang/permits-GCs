@@ -6,6 +6,8 @@ import { mountMcpHttp } from '../mcp/http.js';
 import { config } from './config.js';
 import { hasSupabase } from './lib/supabase.js';
 import { runsRouter } from './routes/runs.js';
+import { shovelsContractorsRouter } from './routes/shovelsContractors.js';
+import { loadShovelsContractors } from './services/shovelsContractors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -19,12 +21,16 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     demoMode: config.demoMode,
     openaiModel: config.openaiModel,
+    loopnetMode: config.loopnetMode,
+    loopnetBatchSize: config.loopnetBatchSize,
+    loopnetIncludeDetails: config.loopnetIncludeDetails,
     supabaseConfigured: hasSupabase(),
     openaiConfigured: Boolean(config.openaiApiKey),
     apifyConfigured: Boolean(config.apifyToken),
     getleadsConfigured: Boolean(config.getleadsApiKey),
     aiArkConfigured: Boolean(config.aiArkApiKey),
     leadmagicConfigured: Boolean(config.leadmagicApiKey),
+    shovelsContractorsLoaded: loadShovelsContractors().length,
     mcp: {
       streamableHttp: '/mcp',
       health: '/mcp/health',
@@ -34,6 +40,7 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.use('/api/runs', runsRouter);
+app.use('/api/shovels/contractors', shovelsContractorsRouter);
 mountMcpHttp(app);
 
 const clientDist = path.resolve(__dirname, '../../client/dist');
@@ -48,9 +55,10 @@ app.use((req, res, next) => {
 });
 
 app.listen(config.port, () => {
+  const contractors = loadShovelsContractors();
   console.log(`Property PM Finder listening on :${config.port}`);
   console.log(`MCP streamable HTTP: /mcp  |  stdio: node dist/mcp/stdio.js`);
   console.log(
-    `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | OpenAI: ${config.openaiApiKey ? 'yes' : 'no'} | Apify: ${config.apifyToken ? 'yes' : 'no'}`,
+    `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | OpenAI: ${config.openaiApiKey ? 'yes' : 'no'} | Apify: ${config.apifyToken ? 'yes' : 'no'} | Shovels contractors: ${contractors.length}`,
   );
 });

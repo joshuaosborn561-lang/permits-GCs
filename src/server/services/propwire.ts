@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { config, COST } from '../config.js';
 import { runActor } from '../lib/apify.js';
+import { haversineMiles, matchesExcludedCategory } from '../lib/zips.js';
 import type { GeocodedLocation, ParsedQueryParams, PropertyRecord } from '../types.js';
 
 const ACTOR_ID = 'solidcode/propwire-com-scraper';
@@ -10,6 +11,7 @@ export interface PropwirePullResult {
   failed: boolean;
   cost: number;
   error?: string;
+  zips_scraped?: string[];
 }
 
 export async function pullPropwire(opts: {
@@ -21,18 +23,53 @@ export async function pullPropwire(opts: {
     return demoPropwire(opts.runId, opts.params, opts.geo);
   }
 
-  const input = buildPropwireInput(opts.params, opts.geo);
-
   try {
-    const items = await runActor<Record<string, unknown>>(ACTOR_ID, input, {
-      label: 'propwire',
-    });
+    let items: Record<string, unknown>[] = [];
+    let zips_scraped: string[] | undefined;
 
-    const properties = items.slice(0, opts.params.max_records).map((item) => mapPropwireItem(opts.runId, item));
+    // Only scrape ZIP-by-ZIP when the caller explicitly supplied zips.
+    // Radius footprints also populate `zips` for reporting — those must use one
+    // native lat/lng + radiusMiles Propwire search, not hundreds of actor runs.
+    const scrapeByZip =
+      Boolean(opts.params.zips_explicit) &&
+      Boolean(opts.params.zips?.length) &&
+      opts.params.location_type === 'zips';
+
+    if (scrapeByZip) {
+      zips_scraped = opts.params.zips;
+      const perZip = Math.max(1, Math.ceil(opts.params.max_records / opts.params.zips!.length));
+      for (const zip of opts.params.zips!) {
+        if (items.length >= opts.params.max_records) break;
+        const batch = await runActor<Record<string, unknown>>(
+          ACTOR_ID,
+          {
+            propertyType: 'commercial',
+            maxItems: Math.min(perZip, opts.params.max_records - items.length),
+            enrichDetails: true,
+            zipCode: zip,
+          },
+          { label: `propwire-zip-${zip}` },
+        );
+        items.push(...batch);
+      }
+    } else {
+      const input = buildPropwireInput(opts.params, opts.geo);
+      items = await runActor<Record<string, unknown>>(ACTOR_ID, input, {
+        label: 'propwire',
+      });
+    }
+
+    let properties = items
+      .slice(0, opts.params.max_records)
+      .map((item) => mapPropwireItem(opts.runId, item));
+
+    properties = filterProperties(properties, opts.params);
+
     return {
       properties,
       failed: false,
       cost: properties.length * COST.propwirePerRecord,
+      zips_scraped,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -56,11 +93,14 @@ function buildPropwireInput(
     enrichDetails: true,
   };
 
-  if (params.location_type === 'radius') {
+  if (
+    params.location_type === 'radius' ||
+    (params.center_lat != null && params.center_lng != null && params.radius_miles)
+  ) {
     return {
       ...base,
-      latitude: geo.latitude,
-      longitude: geo.longitude,
+      latitude: params.center_lat ?? geo.latitude,
+      longitude: params.center_lng ?? geo.longitude,
       radiusMiles: params.radius_miles ?? 50,
     };
   }
@@ -78,6 +118,51 @@ function buildPropwireInput(
     city: geo.city || params.location_value.split(',')[0],
     state: geo.state_code || geo.state,
   };
+}
+
+export function filterProperties(
+  properties: PropertyRecord[],
+  params: ParsedQueryParams,
+): PropertyRecord[] {
+  let out = properties;
+
+  // Only hard-filter to the ZIP allowlist for explicit ZIP pulls.
+  // Radius footprints use haversine below instead (Propwire radius can return
+  // parcels whose USPS ZIP isn't in our STANDARD centroid table).
+  if (params.zips_explicit && params.zips?.length) {
+    const allow = new Set(params.zips);
+    out = out.filter((p) => !p.zip || allow.has(p.zip));
+  }
+
+  if (
+    params.radius_miles &&
+    params.center_lat != null &&
+    params.center_lng != null
+  ) {
+    out = out.filter((p) => {
+      if (p.latitude == null || p.longitude == null) return true;
+      return (
+        haversineMiles(params.center_lat!, params.center_lng!, p.latitude, p.longitude) <=
+        (params.radius_miles ?? 0)
+      );
+    });
+  }
+
+  if (params.exclude_categories?.length) {
+    out = out.filter((p) => {
+      const hay = [
+        p.building_name,
+        p.owner_entity_name,
+        p.property_manager_company,
+        JSON.stringify(p.raw_propwire_data ?? {}),
+      ]
+        .filter(Boolean)
+        .join(' ');
+      return !matchesExcludedCategory(hay, params.exclude_categories!);
+    });
+  }
+
+  return out;
 }
 
 function mapPropwireItem(runId: string, item: Record<string, unknown>): PropertyRecord {
@@ -131,7 +216,8 @@ function demoPropwire(
 ): PropwirePullResult {
   const n = Math.min(params.max_records, 25);
   const city = geo.city || params.location_value.split(',')[0] || 'Fort Worth';
-  const state = geo.state_code || 'TX';
+  const state = geo.state_code || params.states?.[0] || 'TX';
+  const zipPool = params.zips?.length ? params.zips : ['76102', '75001', '75002'];
 
   const properties: PropertyRecord[] = Array.from({ length: n }, (_, i) => {
     const hasCo = i % 3 === 0;
@@ -142,6 +228,7 @@ function demoPropwire(
         : `Jane Owner ${i + 1}`;
     const co = hasCo ? `Metro Property Management Group` : null;
     const street = `${100 + i * 10} Commerce St`;
+    const zip = zipPool[i % zipPool.length]!;
 
     return {
       id: randomUUID(),
@@ -149,9 +236,9 @@ function demoPropwire(
       address: `${street}, ${city}, ${state}`,
       city,
       state,
-      zip: '76102',
-      latitude: geo.latitude + i * 0.001,
-      longitude: geo.longitude - i * 0.001,
+      zip,
+      latitude: (params.center_lat ?? geo.latitude) + i * 0.001,
+      longitude: (params.center_lng ?? geo.longitude) - i * 0.001,
       building_name: i % 4 === 0 ? `${city} Commerce Center ${i + 1}` : null,
       owner_entity_name: owner,
       owner_type: null,
@@ -164,14 +251,15 @@ function demoPropwire(
         ? `${owner}, c/o ${co}, 500 Main St, ${city}, ${state} 76102`
         : `${owner}, ${street}, ${city}, ${state} 76102`,
       status: 'pending',
-      raw_propwire_data: { demo: true, index: i },
+      raw_propwire_data: { demo: true, index: i, zip },
     };
   });
 
   return {
-    properties,
+    properties: filterProperties(properties, params),
     failed: false,
     cost: properties.length * COST.propwirePerRecord,
+    zips_scraped: params.zips?.length ? params.zips : undefined,
   };
 }
 

@@ -68,6 +68,86 @@ export function listRuns(): RunJob[] {
   return [...memory.values()].sort((a, b) => b.created_at.localeCompare(a.created_at));
 }
 
+/** Put a hydrated job into the in-memory store (used when resuming from Supabase). */
+export function putRun(job: RunJob): RunJob {
+  memory.set(job.id, job);
+  return job;
+}
+
+/**
+ * Load a run + properties from Supabase into memory so the pipeline can resume
+ * after a process restart.
+ */
+export async function loadRunFromSupabase(runId: string): Promise<RunJob | null> {
+  if (!hasSupabase()) return null;
+  const { data, error } = await getSupabase().rpc('fetch_pmf_run_bundle', {
+    p_secret: ingestSecret(),
+    p_run_id: runId,
+  });
+  if (error) {
+    console.warn('[supabase] fetch_pmf_run_bundle', error.message);
+    throw new Error(error.message);
+  }
+  const bundle = data as {
+    ok?: boolean;
+    error?: string;
+    run?: Record<string, unknown>;
+    properties?: Record<string, unknown>[];
+  };
+  if (!bundle?.ok || !bundle.run) return null;
+
+  const r = bundle.run;
+  const properties: PropertyRecord[] = (bundle.properties ?? []).map((p) => ({
+    id: String(p.id),
+    run_id: String(p.run_id),
+    address: (p.address as string) ?? null,
+    city: (p.city as string) ?? null,
+    state: (p.state as string) ?? null,
+    zip: (p.zip as string) ?? null,
+    latitude: (p.latitude as number) ?? null,
+    longitude: (p.longitude as number) ?? null,
+    building_name: (p.building_name as string) ?? null,
+    owner_entity_name: (p.owner_entity_name as string) ?? null,
+    owner_type: (p.owner_type as PropertyRecord['owner_type']) ?? null,
+    care_of_company: (p.care_of_company as string) ?? null,
+    is_likely_self_managed: (p.is_likely_self_managed as boolean) ?? null,
+    property_manager_company: (p.property_manager_company as string) ?? null,
+    pm_confidence: (p.pm_confidence as PropertyRecord['pm_confidence']) ?? null,
+    pm_source: (p.pm_source as string) ?? null,
+    mailing_address_raw: (p.mailing_address_raw as string) ?? null,
+    status: String(p.status ?? 'pending'),
+    raw_propwire_data: p.raw_propwire_data,
+    raw_loopnet_data: p.raw_loopnet_data === null ? undefined : p.raw_loopnet_data,
+    raw_google_data: p.raw_google_data === null ? undefined : p.raw_google_data,
+  }));
+
+  const progress = {
+    ...emptyProgress(),
+    ...((r.progress as RunProgress) ?? {}),
+  };
+
+  const job: RunJob = {
+    id: String(r.id),
+    created_at: String(r.created_at),
+    updated_at: String(r.updated_at),
+    natural_language_query: String(r.natural_language_query ?? ''),
+    parsed_params: (r.parsed_params as ParsedQueryParams) ?? ({} as ParsedQueryParams),
+    status: (r.status as RunStatus) ?? 'running',
+    current_step: (r.current_step as string) ?? null,
+    progress,
+    total_records: Number(r.total_records ?? properties.length),
+    total_cost_estimate: Number(r.total_cost_estimate ?? 0),
+    total_cost_actual: Number(r.total_cost_actual ?? 0),
+    cost_estimate_detail: null,
+    cost_breakdown: (r.cost_breakdown as Record<string, number>) ?? {},
+    error_message: (r.error_message as string) ?? null,
+    properties,
+    contacts: [],
+  };
+  memory.set(job.id, job);
+  return job;
+}
+
 export function updateRun(id: string, patch: Partial<RunJob>): RunJob {
   const job = memory.get(id);
   if (!job) throw new Error(`Run ${id} not found`);
