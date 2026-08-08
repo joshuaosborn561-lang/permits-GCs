@@ -171,10 +171,10 @@ export function createPmFinderMcpServer(): McpServer {
   const server = new McpServer(
     {
       name: 'property-pm-finder',
-      version: '1.1.0',
+      version: '1.3.0',
       title: 'SalesGlider Property PM Finder',
       description:
-        'USE FOR: commercial property owners, property managers, and PM decision-maker contacts in a US market (city/county/radius), plus status/CSV of those runs. DO NOT USE FOR: Google Maps local businesses, residential-only lists, Smartlead sends, or LLC→person resolution. SPEND RULE: parse/estimate are free; only pmf_confirm_run spends money and requires explicit user approval after you show the estimate. Workflow: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV. Read resources pmf://guide and pmf://when-to-use.',
+        'USE FOR: commercial property owners, property managers, and PM decision-maker contacts in a US market (city/county/radius). After runs, call pmf_sync_to_supabase (Maps-style server-to-server sync; returns counts only) and verify with select count(*) — do not dump rows into chat. DO NOT USE FOR: Google Maps local businesses, residential-only lists, Smartlead sends, or LLC→person resolution. SPEND RULE: parse/estimate/sync are free; only pmf_confirm_run spends money after explicit approval. Read pmf://guide and pmf://when-to-use.',
     },
     {
       instructions: SERVER_INSTRUCTIONS,
