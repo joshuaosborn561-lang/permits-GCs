@@ -150,6 +150,8 @@ export function mountMcpHttp(app: Express): void {
         'pmf_confirm_run',
         'pmf_get_run',
         'pmf_list_runs',
+        'pmf_sync_to_supabase',
+        'pmf_sync_counts',
         'pmf_get_results',
         'pmf_export_csv',
         'pmf_estimate_cost',
@@ -166,6 +168,8 @@ export function mountMcpHttp(app: Express): void {
       ],
       resources: ['pmf://guide', 'pmf://when-to-use'],
       http: {
+        sync_to_supabase: 'POST /api/runs/:id/sync-to-supabase',
+        sync_counts: 'GET /api/runs/:id/sync-counts',
         shovels_contractors_summary: '/api/shovels/contractors/summary',
         shovels_contractors_query: '/api/shovels/contractors',
         shovels_contractors_sample: '/api/shovels/contractors/sample',

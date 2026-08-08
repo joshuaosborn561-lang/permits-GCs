@@ -40,10 +40,15 @@ If the request is ambiguous between Maps businesses and commercial property owne
 5. **Contact enrichment** for unique PM companies (cached in Supabase):
    getleads ($0) → AI Ark → LeadMagic → Google soft signal (name/title may lack email)
 
-Output is **contact-level** rows, not just buildings. Results also sync into Supabase \`scrape_leads\` (same project as the Google Maps scraper).
+Output is **contact-level** rows, not just buildings. Results sync into Supabase \`property_pm_finder.*\` and \`public.scrape_leads\` (same project as the Google Maps scraper).
+
+## Context budget (critical)
+- getleads / enrichment writes are **server-to-server**. Do **not** pull full result sets into chat and re-insert via Supabase MCP.
+- After a run: call \`pmf_sync_to_supabase\` → report **counts only** → verify with \`select count(*)\` (or \`pmf_sync_counts\`).
+- \`pmf_get_results\` is a tiny QA sample (≤50). Prefer sync + SQL counts for anything bulk.
 
 ## Hard safety rules (money) — never violate
-1. \`pmf_parse_query\`, \`pmf_estimate_cost\`, \`pmf_resolve_location\`, status/results/export tools do **NOT** spend money.
+1. \`pmf_parse_query\`, \`pmf_estimate_cost\`, \`pmf_resolve_location\`, status/sync/results tools do **NOT** spend money.
 2. \`pmf_confirm_run\` **SPENDS** money (Apify + OpenAI + optional enrichment APIs).
 3. **NEVER** call \`pmf_confirm_run\` until you have shown the cost estimate AND the user explicitly approved (e.g. "confirm", "run it", "go ahead", "spend it").
 4. \`confirm_spend\` must be the boolean \`true\` only after that approval. Do not invent approval from vague interest ("look into Fort Worth", "curious what we'd get").
@@ -58,8 +63,9 @@ Output is **contact-level** rows, not just buildings. Results also sync into Sup
 5. Present estimate: \$low–\$high, location, record cap, short assumptions. Ask for explicit spend approval. Recommend 100 records for a first pull.
 6. Only then \`pmf_confirm_run(run_id, confirm_spend=true, max_records?)\`.
 7. Poll \`pmf_get_run\` every few seconds until \`completed\` or \`failed\`.
-8. \`pmf_get_results\` for summary; offer \`pmf_export_csv\` for the full file.
-9. Never invent contacts, emails, or PM companies the tools did not return.
+8. \`pmf_sync_to_supabase(run_id)\` — server writes to Supabase; you only get counts + \`verify_sql\`.
+9. Run those \`select count(*)\` statements (Supabase MCP). Do **not** dump rows into chat.
+10. Never invent contacts, emails, or PM companies the tools did not return.
 
 ## How to talk to the user after parse
 Use language like:
@@ -68,10 +74,10 @@ Use language like:
 > Reply **confirm** to start (I recommend 100 records first), or tell me a different sample size.
 
 ## How to summarize results
-- Counts by \`pm_confidence\`: high (c/o), medium (LoopNet), low (Google), unresolved
-- Counts by \`contact_source\`: getleads (\$0), ai_ark, leadmagic, google_search, cache
-- Mention unresolved PMs and soft Google contacts (name/title may have no email)
-- Offer CSV export for Smartlead import
+- Prefer \`pmf_sync_to_supabase\` / \`pmf_sync_counts\` numbers over row dumps
+- Counts by \`contact_source\` from sync payload (\`contacts_by_source\`) — note getleads=\$0
+- Mention unresolved PMs from run progress counters
+- CSV lives in \`scrape_exports\` after sync; avoid pasting CSV into chat
 
 ## Tool cheat sheet
 | Tool | Spends? | Purpose |
@@ -83,8 +89,10 @@ Use language like:
 | pmf_confirm_run | **YES** | Start paid pipeline |
 | pmf_get_run | No | Live status |
 | pmf_list_runs | No | Find past runs |
-| pmf_get_results | No | Contact rows |
-| pmf_export_csv | No | Full CSV text |
+| pmf_sync_to_supabase | No | **Maps-style sync** — counts only |
+| pmf_sync_counts | No | \`select count(*)\` style verify |
+| pmf_get_results | No | Tiny QA sample (≤50 rows) |
+| pmf_export_csv | No | Full CSV text (avoid for bulk) |
 | pmf_shovels_contractors_summary | No | Cached Shovels GC counts/fill (no rows) |
 | pmf_shovels_contractors_query | No | Paginated Shovels GC contacts (max 50/page) |
 | pmf_shovels_contractors_sample | No | ≤20 random Shovels GC rows for QA |
@@ -138,8 +146,10 @@ export const GUIDE_MARKDOWN = `# SalesGlider Property PM Finder — Full operato
 | pmf_confirm_run | **YES** | User explicitly approved the estimate |
 | pmf_get_run | No | Monitoring a running/completed job |
 | pmf_list_runs | No | "What runs do we have?" |
-| pmf_get_results | No | Run finished; need contacts table |
-| pmf_export_csv | No | User wants a file/CSV |
+| pmf_sync_to_supabase | No | Persist run server-to-server; **counts only** |
+| pmf_sync_counts | No | Verify with count(*) style JSON |
+| pmf_get_results | No | Tiny QA sample only (≤50) |
+| pmf_export_csv | No | CSV text (avoid for bulk — use sync) |
 
 ## Spend-safe workflow (mandatory)
 1. \`pmf_health\`
@@ -148,7 +158,8 @@ export const GUIDE_MARKDOWN = `# SalesGlider Property PM Finder — Full operato
 4. Show estimate → **wait for explicit human approval**
 5. \`pmf_confirm_run\` with \`confirm_spend=true\` (and usually \`max_records=100\`)
 6. Poll \`pmf_get_run\`
-7. \`pmf_get_results\` / \`pmf_export_csv\`
+7. \`pmf_sync_to_supabase\` → verify with \`select count(*)\` / \`pmf_sync_counts\`
+8. Optional tiny QA via \`pmf_get_results\` (limit ≤20) — never bulk row dumps
 
 ## Approval script
 > Estimated cost for N records: \$X–\$Y.
@@ -188,11 +199,14 @@ While \`status=running\`, \`current_step\` may show stages like Propwire pull, c
 export const WHEN_TO_USE_MARKDOWN = `# When to use Property PM Finder
 
 ## Yes — use now
-User wants commercial property **owners**, **property managers**, or **PM decision-maker contacts** for a US market, or status/CSV of such a run.
+User wants commercial property **owners**, **property managers**, or **PM decision-maker contacts** for a US market, or status/sync of such a run.
 
 ## No — wrong tool
 Maps/local business leads, residential owners, sending campaigns, LLC person resolution, unrelated research.
 
 ## Money gate
 Parse & estimate are free. Confirming a run spends money. Never confirm without explicit user approval after showing the estimate.
+
+## Context gate
+After a run, use \`pmf_sync_to_supabase\` (server-to-server) and only \`select count(*)\`. Do not hand-insert getleads/contact rows through chat.
 `;

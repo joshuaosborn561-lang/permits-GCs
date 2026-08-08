@@ -21,6 +21,8 @@ import {
   sampleShovelsContractors,
   shovelsContractorsSummary,
 } from '../server/services/shovelsContractors.js';
+import { countPmSync } from '../server/services/scrapeLeadsSync.js';
+import { syncRunToSupabase } from '../server/services/syncToSupabase.js';
 import type { ContactExportRow, ParsedQueryParams } from '../server/types.js';
 import {
   GUIDE_MARKDOWN,
@@ -62,8 +64,10 @@ function healthPayload() {
     when_not_to_use:
       'Google Maps local-business scrapes, residential-only lists, Smartlead/CRM sends, LLC→person resolution.',
     how_to_use:
-      'Read pmf://guide (or pmf://when-to-use). Property pipeline: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV. Shovels contractors (cached, free): pmf_shovels_contractors_summary → query/sample (paginated; never dump all rows into chat).',
+      'Read pmf://guide (or pmf://when-to-use). Property pipeline: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → pmf_sync_to_supabase (counts only) → verify with SQL select count(*). Prefer sync over dumping rows via get_results/CSV. Shovels: summary → query/sample (paginated).',
     shovels_contractors_loaded: loadShovelsContractors().length,
+    context_rule:
+      'Keep chat context low: enrichment + sync are server-to-server. After a run, call pmf_sync_to_supabase and only run select count(*) — do not rewrite rows into Supabase by hand and do not dump full result sets into chat.',
   };
 }
 
@@ -424,9 +428,47 @@ RECOMMENDED: Pass max_records=100 (or 25) for first pulls unless user demanded a
       return jsonResult({
         run: publicRunView(getRun(run.id)!),
         assistant_instructions:
-          'Poll pmf_get_run until status is completed or failed. Then call pmf_get_results and offer pmf_export_csv. Do not invent contacts.',
+          'Poll pmf_get_run until status is completed or failed. Then call pmf_sync_to_supabase (counts only) and verify with SQL select count(*). Prefer that over pmf_get_results / CSV dumps so rows never pass through chat. Do not invent contacts.',
       });
     },
+  );
+
+  server.registerTool(
+    'pmf_sync_to_supabase',
+    {
+      title: 'sync_to_supabase — persist run counts only',
+      description: `WHEN TO USE: After a property/PM/getleads run finishes, or when the user wants results in Supabase without loading rows into chat. Same job as the Google Maps scraper's server-side sync.
+WHAT IT DOES: Server-to-server upsert into property_pm_finder.properties/contacts AND public.scrape_jobs / scrape_leads / scrape_exports (idempotent replace for leads). Returns COUNTS + verify_sql only — never row payloads.
+WHEN NOT TO USE: To browse individual contacts in chat (use pmf_shovels_* or a tiny pmf_get_results sample). Do not manually insert rows via Supabase MCP.
+NEXT: Run the returned verify_sql count(*) statements (or pmf_sync_counts). Keep context low.`,
+      inputSchema: {
+        run_id: z.string().uuid().describe('Run UUID to sync'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async ({ run_id }) => {
+      try {
+        const result = await syncRunToSupabase(run_id);
+        return jsonResult(result);
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'sync failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'pmf_sync_counts',
+    {
+      title: 'Supabase sync counts (select count(*) style)',
+      description: `WHEN TO USE: Verify a prior pmf_sync_to_supabase / pipeline sync without fetching rows.
+WHAT IT DOES: Returns count-only JSON for properties, contacts, scrape_leads, and contacts_by_source for the run.
+WHEN NOT TO USE: To pull contact details — that fights the low-context design.`,
+      inputSchema: {
+        run_id: z.string().uuid(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async ({ run_id }) => jsonResult(await countPmSync(run_id)),
   );
 
   server.registerTool(
@@ -472,11 +514,11 @@ WHEN NOT TO USE: For fetching contacts — use pmf_get_results on a specific run
   server.registerTool(
     'pmf_get_results',
     {
-      title: 'Get contact-level results',
-      description: `WHEN TO USE: Run status is completed (or user wants a preview of whatever is available).
-WHAT IT DOES: Returns outreach-ready contact rows (one row per decision maker) joined with owner/PM/property fields. Optional filters.
-WHEN NOT TO USE: To start a pull — use parse/confirm. Do not fabricate rows if empty.
-HOW TO PRESENT: Summarize counts by pm_confidence and contact_source; highlight getleads=$0; mention unresolved PMs.`,
+      title: 'Get contact-level results (small sample only)',
+      description: `WHEN TO USE: Rare — only for a tiny QA peek of contacts in chat.
+WHAT IT DOES: Returns a small page of contact rows (default limit 20, max 50).
+PREFER INSTEAD: pmf_sync_to_supabase then SQL select count(*) / pmf_sync_counts so rows never enter model context.
+WHEN NOT TO USE: Bulk export into Supabase, full-list review, or getleads result dumps — use sync_to_supabase.`,
       inputSchema: {
         run_id: z.string().uuid(),
         q: z.string().optional().describe('Search name, email, company, address'),
@@ -488,7 +530,13 @@ HOW TO PRESENT: Summarize counts by pm_confidence and contact_source; highlight 
           .enum(['getleads', 'ai_ark', 'leadmagic', 'google_search', 'cache'])
           .optional()
           .describe('Filter by contact enrichment source'),
-        limit: z.number().int().min(1).max(5000).optional().describe('Max rows (default 200)'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe('Max rows to return to chat (default 20, hard max 50)'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -506,12 +554,14 @@ HOW TO PRESENT: Summarize counts by pm_confidence and contact_source; highlight 
       }
       if (pm_confidence) rows = rows.filter((r) => r.pm_confidence === pm_confidence);
       if (contact_source) rows = rows.filter((r) => r.contact_source === contact_source);
-      const capped = rows.slice(0, limit ?? 200);
+      const capped = rows.slice(0, limit ?? 20);
       return jsonResult({
         run: publicRunView(run),
         total_matching: rows.length,
         returned: capped.length,
         rows: capped,
+        context_warning:
+          'Rows in chat burn context. For bulk work use pmf_sync_to_supabase + select count(*).',
       });
     },
   );
@@ -644,8 +694,9 @@ Follow this exact workflow:
 5. Show cost estimate clearly ($low–$high, location, record cap, short assumptions). Ask for explicit approval to spend. Recommend max_records=100 for a first pull.
 6. Do NOT call pmf_confirm_run until the user clearly approves ("confirm", "run it", "go ahead"). Vague interest is not approval.
 7. After confirm_spend=true, poll pmf_get_run until completed/failed. Explain cascade steps if asked (Propwire → c/o → LoopNet → Google → enrichment).
-8. Call pmf_get_results. Summarize: records pulled, PM by confidence/source, contacts by contact_source (note getleads=$0). Offer pmf_export_csv.
-9. Never invent contacts or PMs. Estimates are free; confirms spend money.`,
+8. Call pmf_sync_to_supabase(run_id). Report counts only (properties/contacts/scrape_leads). Tell the user to verify with the returned verify_sql count(*) statements.
+9. Do NOT dump getleads/contact rows into chat or insert them via Supabase MCP by hand — enrichment already wrote server-to-server.
+10. Optional tiny QA: pmf_get_results with limit≤20. Never invent contacts. Estimates are free; confirms spend money.`,
           },
         },
       ],
@@ -693,7 +744,7 @@ Follow this exact workflow:
           role: 'user',
           content: {
             type: 'text',
-            text: `Export Property PM Finder contacts for run ${run_id}. Call pmf_get_run first. If completed (or has rows), call pmf_get_results for a short summary, then pmf_export_csv and provide the CSV. Do not invent rows. Do not start a new paid run.`,
+            text: `For run ${run_id}: call pmf_sync_to_supabase first (server-to-server; counts only). Report scrape_job_id and counts. Tell the user to verify with the returned verify_sql select count(*) statements. Only if they insist on a chat CSV, call pmf_export_csv — otherwise keep rows out of context. Do not invent rows. Do not start a new paid run.`,
           },
         },
       ],

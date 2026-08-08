@@ -11,7 +11,7 @@ import { resolveManyViaLoopnet } from '../services/loopnet.js';
 import { isNameVariant, parseOwnerMailing } from '../services/ownerParse.js';
 import { pullPropwire } from '../services/propwire.js';
 import type { GeocodedLocation, PropertyRecord, RunProgress } from '../types.js';
-import { syncContactsToScrapeLeads } from '../services/scrapeLeadsSync.js';
+import { syncRunToSupabase } from '../services/syncToSupabase.js';
 import {
   getRun,
   persistContacts,
@@ -260,6 +260,9 @@ export async function startPipelineFromOwnerParse(opts: {
 
   const companies = [...new Set(resolvedProps.map((p) => p.property_manager_company!))];
   const companyContacts = new Map<string, CachedContact | null>();
+  const contacts = [];
+  /** Flush getleads/enrichment hits to Supabase as we go (server-to-server, no chat). */
+  const pendingPersist: ReturnType<typeof contactToRecord>[] = [];
 
   for (const company of companies) {
     const result = await enrichPmCompany({
@@ -280,18 +283,36 @@ export async function startPipelineFromOwnerParse(opts: {
       if (result.contact.source === 'leadmagic') progress.contacts_from_leadmagic += 1;
       if (result.contact.source === 'google_search') progress.contacts_from_google += 1;
     }
+
+    // Map enrichment onto all properties for this PM company immediately
+    if (result.contact) {
+      for (const prop of resolvedProps) {
+        if (prop.property_manager_company !== company) continue;
+        prop.status = 'enriched';
+        const rec = contactToRecord(runId, prop.id, result.contact);
+        contacts.push(rec);
+        pendingPersist.push(rec);
+        progress.contacts_found += 1;
+      }
+    }
+
+    // Incremental getleads/enrichment persist every 10 companies (or on getleads hit)
+    if (
+      pendingPersist.length >= 25 ||
+      (result.contact?.source === 'getleads' && pendingPersist.length > 0)
+    ) {
+      await persistContacts(pendingPersist.splice(0, pendingPersist.length));
+      const current = getRun(runId)!;
+      current.contacts = [...contacts];
+      current.properties = properties;
+    }
+
     bumpCost(progress, breakdown);
     updateProgress(runId, progress, breakdown, properties);
   }
 
-  const contacts = [];
-  for (const prop of resolvedProps) {
-    const c = companyContacts.get(prop.property_manager_company!);
-    if (!c) continue;
-    prop.status = 'enriched';
-    const rec = contactToRecord(runId, prop.id, c);
-    contacts.push(rec);
-    progress.contacts_found += 1;
+  if (pendingPersist.length) {
+    await persistContacts(pendingPersist.splice(0, pendingPersist.length));
   }
 
   const current = getRun(runId)!;
@@ -302,9 +323,10 @@ export async function startPipelineFromOwnerParse(opts: {
   await persistProperties(runId, properties);
   await persistContacts(contacts);
 
-  updateRun(runId, { current_step: 'sync_scrape_leads' });
-  const synced = await syncContactsToScrapeLeads(getRun(runId)!);
-  progress.contacts_synced_to_scrape_leads = synced;
+  // Final Maps-style sync_to_supabase: scrape_jobs + scrape_leads + scrape_exports (counts only)
+  updateRun(runId, { current_step: 'sync_to_supabase' });
+  const synced = await syncRunToSupabase(runId);
+  progress.contacts_synced_to_scrape_leads = synced.counts.scrape_leads_inserted;
   updateProgress(runId, progress, breakdown, properties);
 }
 

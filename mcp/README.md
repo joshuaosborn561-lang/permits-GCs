@@ -40,7 +40,7 @@ Turns requests like “commercial property owners in Fort Worth, TX” into outr
 4. Show estimate → **wait for explicit user approval**
 5. `pmf_confirm_run` with `confirm_spend=true` (spends money)
 6. Poll `pmf_get_run`
-7. `pmf_get_results` / `pmf_export_csv`
+7. `pmf_sync_to_supabase` → verify with `select count(*)` / `pmf_sync_counts` (keep context low; do not dump rows)
 
 ## Tools
 
@@ -53,7 +53,9 @@ Turns requests like “commercial property owners in Fort Worth, TX” into outr
 | `pmf_confirm_run` | **Yes** | Start pipeline |
 | `pmf_get_run` | No | Live status |
 | `pmf_list_runs` | No | Recent runs |
-| `pmf_get_results` | No | Contact rows |
+| `pmf_sync_to_supabase` | No | Maps-style sync — counts only |
+| `pmf_sync_counts` | No | `select count(*)` style verify |
+| `pmf_get_results` | No | Tiny QA sample (≤50 rows) |
 | `pmf_export_csv` | No | CSV text |
 
 ## Claude Desktop (stdio)

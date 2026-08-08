@@ -11,6 +11,8 @@ import {
 import { resumeRun } from '../pipeline/resume.js';
 import { startPipeline } from '../pipeline/runner.js';
 import { planMarket } from '../services/planMarket.js';
+import { countPmSync } from '../services/scrapeLeadsSync.js';
+import { syncRunToSupabase } from '../services/syncToSupabase.js';
 import type { ContactExportRow, ParsedQueryParams } from '../types.js';
 
 export const runsRouter = Router();
@@ -140,6 +142,29 @@ runsRouter.post('/:id/confirm', async (req, res) => {
     res.json({ run: publicRunView(getRun(run.id)!) });
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'confirm failed' });
+  }
+});
+
+/**
+ * Maps-style sync_to_supabase: persist property_pm_finder.* + scrape_jobs/leads/exports.
+ * Returns counts only — keep Claude context low.
+ */
+runsRouter.post('/:id/sync-to-supabase', async (req, res) => {
+  try {
+    const result = await syncRunToSupabase(req.params.id);
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'sync failed' });
+  }
+});
+
+/** Count-only verification against Supabase (no row payloads). */
+runsRouter.get('/:id/sync-counts', async (req, res) => {
+  try {
+    const counts = await countPmSync(req.params.id);
+    res.json(counts);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'count failed' });
   }
 });
 
