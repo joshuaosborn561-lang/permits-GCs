@@ -1,0 +1,68 @@
+{
+  "source": {
+    "portal": "https://www.dallascad.org/DataProducts.aspx",
+    "product": "2027 Data Files (Most Current Ownership) \u2014 DCAD2027_CURRENT.zip",
+    "download_url_pattern": "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=<UNC path URL-encoded>",
+    "direct_example": "https://www.dallascad.org/ViewPDFs.aspx?type=3&id=%5C%5CDCAD.ORG%5CWEB%5CWEBDATA%5CWEBFORMS%5Cdata%20products%5CDCAD2027_CURRENT.zip",
+    "filter": "COM_DETAIL accounts joined to ACCOUNT_INFO (DIVISION_CD=COM) and ACCOUNT_APPRL_YEAR",
+    "appraisal_year": 2027,
+    "rows": 77394,
+    "value_source_counts": {
+      "PREV_MKT_VAL": 74858,
+      "EMPTY": 2536
+    }
+  },
+  "mapping": {
+    "county": {
+      "value": "Dallas"
+    },
+    "account_id": {
+      "source": "ACCOUNT_INFO.ACCOUNT_NUM"
+    },
+    "owner_name": {
+      "source": [
+        "OWNER_NAME1",
+        "OWNER_NAME2"
+      ]
+    },
+    "mailing_address": {
+      "source": [
+        "OWNER_ADDRESS_LINE1",
+        "OWNER_ADDRESS_LINE2",
+        "OWNER_ADDRESS_LINE3",
+        "OWNER_ADDRESS_LINE4",
+        "OWNER_CITY",
+        "OWNER_STATE",
+        "OWNER_ZIPCODE"
+      ]
+    },
+    "parcel_address": {
+      "source": [
+        "STREET_NUM",
+        "STREET_HALF_NUM",
+        "FULL_STREET_NAME",
+        "BLDG_ID",
+        "UNIT_ID"
+      ]
+    },
+    "city": {
+      "source": "PROPERTY_CITY"
+    },
+    "zip": {
+      "source": "PROPERTY_ZIPCODE",
+      "notes": "truncated to 5 digits"
+    },
+    "assessed_value": {
+      "source": "ACCOUNT_APPRL_YEAR.TOT_VAL",
+      "fallback": "PREV_MKT_VAL",
+      "notes": "2027 CURRENT ownership file has TOT_VAL mostly unset; PREV_MKT_VAL (prior certified market) used when TOT_VAL is 0"
+    },
+    "use_code": {
+      "source": "COM_DETAIL.BLDG_CLASS_DESC"
+    },
+    "prop_type": {
+      "value": "Commercial",
+      "notes": "from COM_DETAIL presence / DIVISION_CD=COM"
+    }
+  }
+}

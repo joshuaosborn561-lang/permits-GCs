@@ -1,0 +1,55 @@
+{
+  "source": {
+    "portal": "https://www.tad.org/resources/data-downloads",
+    "product": "PropertyData(Delimited)_C.ZIP \u2014 commercial property data (pipe-delimited)",
+    "download_url": "https://www.tad.org/content/data-download/PropertyData(Delimited)_C.ZIP",
+    "also_downloaded": [
+      "https://www.tad.org/content/data-download/PropertyData(Delimited).ZIP",
+      "https://www.tad.org/content/data-download/PropertyData_2025(Certified).ZIP",
+      "https://www.tad.org/content/data-download/PropertyDataSupplemental_C_2025(Certified).ZIP"
+    ],
+    "delimiter": "|",
+    "appraisal_year": 2026,
+    "rows": 59007
+  },
+  "mapping": {
+    "county": {
+      "value": "Tarrant"
+    },
+    "account_id": {
+      "source": "Account_Num"
+    },
+    "owner_name": {
+      "source": "Owner_Name"
+    },
+    "mailing_address": {
+      "source": [
+        "Owner_Address",
+        "Owner_CityState",
+        "Owner_Zip"
+      ]
+    },
+    "parcel_address": {
+      "source": "Situs_Address"
+    },
+    "city": {
+      "source": "PropertyDataSupplemental_C_2025.SitusCity",
+      "notes": "Optional join on AccountNumber; UTF-16 LE file"
+    },
+    "zip": {
+      "source": null,
+      "notes": "Situs ZIP not present in PropertyData delimited commercial extract"
+    },
+    "assessed_value": {
+      "source": "Appraised_Value",
+      "fallback": "Total_Value"
+    },
+    "use_code": {
+      "source": "Property_Class",
+      "fallback": "State_Use_Code"
+    },
+    "prop_type": {
+      "value": "Commercial"
+    }
+  }
+}
