@@ -1,5 +1,7 @@
-# Local full rolls (re-download from CAD portals; see county READMEs)
-dcad/DCAD2027_CURRENT.zip
-tad/PropertyData_Delimited.zip
-tad/PropertyData_2025_Certified.zip
-tad/extract_supp/PropertyDataSupplemental_C_2025.txt
+# Keep only normalized commercial_parcels.csv + field_map.json + README.md
+*
+!*/
+!**/commercial_parcels.csv
+!**/field_map.json
+!**/README.md
+!.gitignore

@@ -8,3 +8,14 @@ client/dist/
 .railway/
 coverage/
 .vite/
+
+# Appraisal district raw downloads / extracts (keep normalized CSVs)
+data/parcels/**/*.zip
+data/parcels/**/extract*/
+data/parcels/**/account_info*.csv
+data/parcels/**/*.TXT
+data/parcels/**/*.txt
+data/parcels/**/*.CSV
+!data/parcels/**/commercial_parcels.csv
+!data/parcels/**/field_map.json
+!data/parcels/**/README.md

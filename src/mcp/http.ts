@@ -6,13 +6,9 @@ import { createPmFinderMcpServer } from './createServer.js';
 
 /**
  * Mount Streamable HTTP MCP at /mcp for Claude / Cursor remote connectors.
- *
- * Stateful sessions (mcp-session-id) + GET SSE, matching the MCP SDK example
- * that Claude custom connectors expect. Stateless POST-only + 405 on GET
- * causes Claude.ai connectors to fail to connect.
+ * Stateful sessions (mcp-session-id) + GET SSE.
  */
 export function mountMcpHttp(app: Express): void {
-  /** sessionId → transport (one MCP server connected per transport) */
   const transports: Record<string, StreamableHTTPServerTransport> = {};
 
   const cleanupTransport = async (sessionId: string) => {
@@ -40,8 +36,6 @@ export function mountMcpHttp(app: Express): void {
       } else if (!sessionId && isInitializeRequest(req.body)) {
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
-          // JSON responses are more compatible with some Claude connector paths;
-          // SSE is still available via GET for notifications.
           enableJsonResponse: true,
           onsessioninitialized: (id) => {
             console.log('[mcp http] session initialized', id);
@@ -87,7 +81,6 @@ export function mountMcpHttp(app: Express): void {
     }
   });
 
-  // Claude opens GET /mcp (with mcp-session-id) for the optional SSE notification stream.
   app.get('/mcp', async (req: Request, res: Response) => {
     const sessionIdHeader = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(sessionIdHeader)
@@ -102,8 +95,7 @@ export function mountMcpHttp(app: Express): void {
     }
 
     try {
-      const transport = transports[sessionId];
-      await transport.handleRequest(req, res);
+      await transports[sessionId].handleRequest(req, res);
     } catch (err) {
       console.error('[mcp http] GET SSE failed', err);
       if (!res.headersSent) {
@@ -112,7 +104,6 @@ export function mountMcpHttp(app: Express): void {
     }
   });
 
-  // Client may DELETE to end a session
   app.delete('/mcp', async (req: Request, res: Response) => {
     const sessionIdHeader = req.headers['mcp-session-id'];
     const sessionId = Array.isArray(sessionIdHeader)
@@ -136,6 +127,7 @@ export function mountMcpHttp(app: Express): void {
   app.get('/mcp/health', (_req, res) => {
     res.json({
       ok: true,
+      product: 'Permit & Parcel MCP',
       transport: 'streamable-http',
       path: '/mcp',
       authRequired: false,
@@ -144,34 +136,30 @@ export function mountMcpHttp(app: Express): void {
       enableJsonResponse: true,
       activeSessions: Object.keys(transports).length,
       tools: [
-        'pmf_health',
-        'pmf_parse_query',
-        'pmf_resolve_location',
-        'pmf_confirm_run',
-        'pmf_get_run',
-        'pmf_list_runs',
-        'pmf_get_results',
-        'pmf_export_csv',
-        'pmf_estimate_cost',
-        'pmf_shovels_contractors_summary',
-        'pmf_shovels_contractors_query',
-        'pmf_shovels_contractors_sample',
-        'pmf_shovels_contractors_get',
-        'pmf_shovels_contractors_export_csv',
+        'health',
+        'permits_contractors_summary',
+        'permits_contractors_query',
+        'permits_contractors_sample',
+        'permits_contractors_get',
+        'permits_contractors_export_csv',
+        'parcels_summary',
+        'parcels_query',
+        'parcels_sample',
+        'parcels_export_csv',
+        'opensos_lookup',
+        'sync_to_supabase',
       ],
-      prompts: [
-        'pmf_run_commercial_pull',
-        'pmf_check_run_status',
-        'pmf_export_contacts',
-      ],
-      resources: ['pmf://guide', 'pmf://when-to-use'],
+      prompts: ['pp_query_contractors', 'pp_query_parcels'],
+      resources: ['permit-parcel://guide', 'permit-parcel://when-to-use'],
       http: {
-        shovels_contractors_summary: '/api/shovels/contractors/summary',
-        shovels_contractors_query: '/api/shovels/contractors',
-        shovels_contractors_sample: '/api/shovels/contractors/sample',
-        shovels_contractors_export: '/api/shovels/contractors/export.csv',
+        parcels_summary: '/api/parcels/summary',
+        parcels_query: '/api/parcels',
+        parcels_sync: 'POST /api/parcels/sync-to-supabase',
+        contractors: '/api/shovels/contractors',
+        opensos_lookup: 'POST /api/opensos/lookup',
+        sync_to_supabase: 'POST /api/sync-to-supabase',
       },
-      note: 'Use POST /mcp for JSON-RPC (initialize returns mcp-session-id). Claude may GET /mcp with that header for SSE. No auth.',
+      note: 'Authless MCP. Propwire cascade removed. Prefer sync_to_supabase + select count(*).',
     });
   });
 }

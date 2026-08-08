@@ -1,11 +1,11 @@
 {
-  "name": "property-pm-finder",
-  "version": "1.0.0",
+  "name": "permit-parcel-mcp",
+  "version": "2.0.0",
   "private": true,
-  "description": "Commercial property owner + property manager finder for SalesGlider Growth",
+  "description": "Permit & Parcel MCP — Shovels commercial GCs + DCAD/TAD/CCAD parcels + OpenSOS",
   "type": "module",
   "bin": {
-    "property-pm-finder-mcp": "./dist/mcp/stdio.js"
+    "permit-parcel-mcp": "./dist/mcp/stdio.js"
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
@@ -25,11 +25,9 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/supabase-js": "^2.49.1",
-    "apify-client": "^2.12.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "openai": "^4.86.2",
     "uuid": "^11.1.0",
     "zod": "^3.25.76"
   },

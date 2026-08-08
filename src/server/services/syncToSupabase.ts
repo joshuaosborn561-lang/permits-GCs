@@ -1,0 +1,316 @@
+import { randomUUID } from 'node:crypto';
+import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
+import type { ParcelRecord } from '../types.js';
+import {
+  collectParcelsForSync,
+  parcelsToCsv,
+  type ParcelQuery,
+} from './parcels.js';
+import {
+  contractorsToCsv,
+  loadShovelsContractors,
+  queryShovelsContractors,
+  type ContractorQuery,
+} from './shovelsContractors.js';
+
+export interface SyncCounts {
+  scrape_job_id: string;
+  rows_inserted: number;
+  rows_deleted: number;
+  export_bytes: number;
+  dataset: string;
+}
+
+export interface SyncResult {
+  ok: boolean;
+  supabase_configured: boolean;
+  dataset: string;
+  scrape_job_id: string;
+  counts: SyncCounts & Record<string, number | string>;
+  verify_sql: string[];
+  error?: string;
+  assistant_instructions: string;
+}
+
+function tagsFor(dataset: string, extra: string[] = []): string[] {
+  return ['permit_parcel', dataset, ...extra].filter(Boolean);
+}
+
+async function upsertJob(opts: {
+  id: string;
+  prompt: string;
+  tags: string[];
+  requestEstimate: number;
+}): Promise<string | null> {
+  const { error } = await getSupabase().rpc('ingest_scrape_job', {
+    p_secret: ingestSecret(),
+    p_job: {
+      id: opts.id,
+      prompt: opts.prompt,
+      tags: opts.tags,
+      status: 'completed',
+      estimate: {
+        total: 0,
+        mapsCost: 0,
+        llmCost: 0,
+        apifyCost: 0,
+        requestEstimate: opts.requestEstimate,
+      },
+      downloadUrl: null,
+      error: null,
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+    },
+  });
+  return error ? error.message : null;
+}
+
+async function replaceLeads(
+  jobId: string,
+  tags: string[],
+  rows: Record<string, unknown>[],
+): Promise<{ deleted: number; inserted: number; error?: string }> {
+  let deleted = 0;
+  let inserted = 0;
+  if (!rows.length) {
+    const { data, error } = await getSupabase().rpc('replace_scrape_leads', {
+      p_secret: ingestSecret(),
+      p_job_id: jobId,
+      p_tags: tags,
+      p_rows: [],
+    });
+    if (error) return { deleted: 0, inserted: 0, error: error.message };
+    return {
+      deleted: Number((data as { deleted?: number })?.deleted ?? 0),
+      inserted: 0,
+    };
+  }
+  for (let i = 0; i < rows.length; i += 500) {
+    const chunk = rows.slice(i, i + 500);
+    if (i === 0) {
+      const { data, error } = await getSupabase().rpc('replace_scrape_leads', {
+        p_secret: ingestSecret(),
+        p_job_id: jobId,
+        p_tags: tags,
+        p_rows: chunk,
+      });
+      if (error) return { deleted, inserted, error: error.message };
+      deleted = Number((data as { deleted?: number })?.deleted ?? 0);
+      inserted += Number((data as { inserted?: number })?.inserted ?? chunk.length);
+    } else {
+      const { data, error } = await getSupabase().rpc('ingest_scrape_leads', {
+        p_secret: ingestSecret(),
+        p_job_id: jobId,
+        p_tags: tags,
+        p_rows: chunk,
+      });
+      if (error) return { deleted, inserted, error: error.message };
+      inserted += Number((data as { inserted?: number })?.inserted ?? chunk.length);
+    }
+  }
+  return { deleted, inserted };
+}
+
+async function upsertExport(jobId: string, filename: string, content: string) {
+  const { error } = await getSupabase().rpc('upsert_scrape_export', {
+    p_secret: ingestSecret(),
+    p_job_id: jobId,
+    p_filename: filename,
+    p_content: content,
+  });
+  if (error) console.warn('[sync] export failed', error.message);
+  return error ? 0 : Buffer.byteLength(content, 'utf8');
+}
+
+function parcelToLead(p: ParcelRecord) {
+  return {
+    place_id: `parcel:${p.county}:${p.account_id}`,
+    name: p.owner_name,
+    owner_name: p.owner_name,
+    email: '',
+    phone: '',
+    website: '',
+    city: p.city ?? '',
+    state: 'TX',
+    zip: p.zip ?? '',
+    rating: '',
+    reviews: '',
+    category: p.use_code || 'commercial',
+    main_category: p.owner_type,
+    maps_url: '',
+    in_icp: p.owner_type === 'local_llc' || p.owner_type === 'individual' ? 'true' : 'false',
+    address: p.parcel_address ?? '',
+    mailing_address: p.mailing_address ?? '',
+    assessed_value: p.assessed_value ?? '',
+    account_id: p.account_id,
+    county: p.county,
+    owner_type: p.owner_type,
+    source_pipeline: 'permit_parcel',
+  };
+}
+
+async function upsertParcelRows(parcels: ParcelRecord[]): Promise<number> {
+  if (!hasSupabase() || !parcels.length) return 0;
+  let n = 0;
+  for (let i = 0; i < parcels.length; i += 200) {
+    const chunk = parcels.slice(i, i + 200);
+    const { data, error } = await getSupabase().rpc('ingest_permit_parcel_parcels', {
+      p_secret: ingestSecret(),
+      p_rows: chunk,
+    });
+    if (error) {
+      console.warn('[sync] ingest_permit_parcel_parcels', error.message);
+      break;
+    }
+    n += Number((data as { upserted?: number })?.upserted ?? chunk.length);
+  }
+  return n;
+}
+
+export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncResult> {
+  const jobId = `permit-parcels-${randomUUID().slice(0, 8)}`;
+  const base: SyncResult = {
+    ok: false,
+    supabase_configured: hasSupabase(),
+    dataset: 'parcels',
+    scrape_job_id: jobId,
+    counts: {
+      scrape_job_id: jobId,
+      rows_inserted: 0,
+      rows_deleted: 0,
+      export_bytes: 0,
+      dataset: 'parcels',
+    },
+    verify_sql: [
+      `select count(*) from public.scrape_leads where job_id = '${jobId}';`,
+      `select count(*) from permit_parcel.parcels;`,
+      `select owner_type, count(*) from permit_parcel.parcels group by 1;`,
+    ],
+    assistant_instructions:
+      'Parcel sync finished server-to-server. Verify with verify_sql count(*) only — do not pull rows into chat.',
+  };
+  if (!hasSupabase()) return { ...base, error: 'Supabase not configured' };
+
+  const parcels = collectParcelsForSync(q);
+  const schemaUpserted = await upsertParcelRows(parcels);
+  const tags = tagsFor('parcels', q.county ? [String(q.county).toLowerCase()] : []);
+  const jobErr = await upsertJob({
+    id: jobId,
+    prompt: `Permit & Parcel MCP parcels sync ${JSON.stringify(q)}`,
+    tags,
+    requestEstimate: parcels.length,
+  });
+  if (jobErr) return { ...base, error: jobErr };
+
+  const leads = parcels.map(parcelToLead);
+  const { deleted, inserted, error } = await replaceLeads(jobId, tags, leads);
+  if (error) return { ...base, error };
+  const exportBytes = await upsertExport(jobId, `${jobId}.csv`, parcelsToCsv(parcels));
+
+  return {
+    ...base,
+    ok: true,
+    counts: {
+      scrape_job_id: jobId,
+      rows_inserted: inserted,
+      rows_deleted: deleted,
+      export_bytes: exportBytes,
+      dataset: 'parcels',
+      parcels_matched: parcels.length,
+      permit_parcel_schema_upserted: schemaUpserted,
+    },
+  };
+}
+
+export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promise<SyncResult> {
+  const jobId = `permit-contractors-${randomUUID().slice(0, 8)}`;
+  const base: SyncResult = {
+    ok: false,
+    supabase_configured: hasSupabase(),
+    dataset: 'shovels_contractors',
+    scrape_job_id: jobId,
+    counts: {
+      scrape_job_id: jobId,
+      rows_inserted: 0,
+      rows_deleted: 0,
+      export_bytes: 0,
+      dataset: 'shovels_contractors',
+    },
+    verify_sql: [`select count(*) from public.scrape_leads where job_id = '${jobId}';`],
+    assistant_instructions:
+      'Contractor sync finished server-to-server. Verify with select count(*) only.',
+  };
+  if (!hasSupabase()) return { ...base, error: 'Supabase not configured' };
+
+  // Gather matching contractors via pagination (server-side, not chat)
+  const items = [];
+  let page = 1;
+  for (;;) {
+    const batch = queryShovelsContractors({ ...q, page, page_size: 50 });
+    items.push(...batch.items);
+    if (page >= batch.total_pages || items.length >= 10000) break;
+    page += 1;
+  }
+
+  const tags = tagsFor('shovels_contractors', q.place ? [String(q.place)] : []);
+  const jobErr = await upsertJob({
+    id: jobId,
+    prompt: `Permit & Parcel MCP Shovels contractors sync ${JSON.stringify(q)}`,
+    tags,
+    requestEstimate: items.length,
+  });
+  if (jobErr) return { ...base, error: jobErr };
+
+  const leads = items.map((c) => ({
+    place_id: `shovels:${c.id}`,
+    name: c.business_name || c.name || '',
+    owner_name: c.name || '',
+    email: c.email || c.primary_email || '',
+    phone: c.phone || c.primary_phone || '',
+    website: c.website || '',
+    city: c.address_city || '',
+    state: c.address_state || 'TX',
+    zip: c.address_zip || '',
+    rating: '',
+    reviews: '',
+    category: c.primary_industry || 'commercial_contractor',
+    main_category: 'shovels_commercial_contractor',
+    maps_url: '',
+    in_icp: c.email || c.primary_email ? 'true' : 'false',
+    address: c.address_street || '',
+    source_pipeline: 'permit_parcel_shovels',
+  }));
+
+  const { deleted, inserted, error } = await replaceLeads(jobId, tags, leads);
+  if (error) return { ...base, error };
+  const exportBytes = await upsertExport(jobId, `${jobId}.csv`, contractorsToCsv(items));
+
+  return {
+    ...base,
+    ok: true,
+    counts: {
+      scrape_job_id: jobId,
+      rows_inserted: inserted,
+      rows_deleted: deleted,
+      export_bytes: exportBytes,
+      dataset: 'shovels_contractors',
+      contractors_matched: items.length,
+      contractors_loaded: loadShovelsContractors().length,
+    },
+  };
+}
+
+export async function syncToSupabase(opts: {
+  dataset: 'parcels' | 'contractors' | 'all';
+  parcel_query?: ParcelQuery;
+  contractor_query?: ContractorQuery;
+}): Promise<{ ok: boolean; results: SyncResult[] }> {
+  const results: SyncResult[] = [];
+  if (opts.dataset === 'parcels' || opts.dataset === 'all') {
+    results.push(await syncParcelsToSupabase(opts.parcel_query ?? {}));
+  }
+  if (opts.dataset === 'contractors' || opts.dataset === 'all') {
+    results.push(await syncContractorsToSupabase(opts.contractor_query ?? {}));
+  }
+  return { ok: results.every((r) => r.ok), results };
+}

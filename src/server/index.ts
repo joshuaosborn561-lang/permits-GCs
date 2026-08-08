@@ -5,32 +5,30 @@ import { fileURLToPath } from 'url';
 import { mountMcpHttp } from '../mcp/http.js';
 import { config } from './config.js';
 import { hasSupabase } from './lib/supabase.js';
-import { runsRouter } from './routes/runs.js';
+import { openSosRouter } from './routes/openSos.js';
+import { parcelsRouter } from './routes/parcels.js';
 import { shovelsContractorsRouter } from './routes/shovelsContractors.js';
+import { loadParcels, parcelsSummary } from './services/parcels.js';
 import { loadShovelsContractors } from './services/shovelsContractors.js';
+import { syncToSupabase } from './services/syncToSupabase.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '4mb' }));
 
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
+    product: 'Permit & Parcel MCP',
     demoMode: config.demoMode,
-    openaiModel: config.openaiModel,
-    loopnetMode: config.loopnetMode,
-    loopnetBatchSize: config.loopnetBatchSize,
-    loopnetIncludeDetails: config.loopnetIncludeDetails,
     supabaseConfigured: hasSupabase(),
-    openaiConfigured: Boolean(config.openaiApiKey),
-    apifyConfigured: Boolean(config.apifyToken),
-    getleadsConfigured: Boolean(config.getleadsApiKey),
-    aiArkConfigured: Boolean(config.aiArkApiKey),
-    leadmagicConfigured: Boolean(config.leadmagicApiKey),
+    openSosConfigured: Boolean(config.openSosApiKey),
     shovelsContractorsLoaded: loadShovelsContractors().length,
+    parcelsLoaded: loadParcels().length,
+    parcels: parcelsSummary(),
     mcp: {
       streamableHttp: '/mcp',
       health: '/mcp/health',
@@ -39,16 +37,34 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-app.use('/api/runs', runsRouter);
+app.use('/api/parcels', parcelsRouter);
 app.use('/api/shovels/contractors', shovelsContractorsRouter);
+app.use('/api/opensos', openSosRouter);
+
+app.post('/api/sync-to-supabase', async (req, res) => {
+  try {
+    const dataset = String(req.body?.dataset ?? 'all') as 'parcels' | 'contractors' | 'all';
+    const result = await syncToSupabase({
+      dataset: ['parcels', 'contractors', 'all'].includes(dataset) ? dataset : 'all',
+      parcel_query: {
+        county: req.body?.county,
+        owner_type: req.body?.owner_type,
+        q: req.body?.q,
+      },
+      contractor_query: {
+        place: req.body?.place,
+        q: req.body?.q,
+      },
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'sync failed' });
+  }
+});
+
 mountMcpHttp(app);
 
-/**
- * Claude custom connectors probe OAuth discovery before treating a server as
- * authless. They expect clean 404s on these paths. Our SPA catch-all used to
- * return 200 HTML here, which made Claude attempt Dynamic Client Registration
- * and fail with "Couldn't register with … sign-in service".
- */
+/** Claude OAuth discovery probes — return clean 404 JSON, not SPA HTML. */
 app.use((req, res, next) => {
   const p = req.path;
   if (
@@ -61,7 +77,7 @@ app.use((req, res, next) => {
     res.status(404).json({
       error: 'not_found',
       message:
-        'This MCP server does not use OAuth. Connect as an authless / no-auth custom connector (leave Client ID blank).',
+        'This MCP server does not use OAuth. Connect as an authless custom connector (leave Client ID blank).',
     });
     return;
   }
@@ -86,9 +102,10 @@ app.use((req, res, next) => {
 
 app.listen(config.port, () => {
   const contractors = loadShovelsContractors();
-  console.log(`Property PM Finder listening on :${config.port}`);
+  const parcels = loadParcels();
+  console.log(`Permit & Parcel MCP listening on :${config.port}`);
   console.log(`MCP streamable HTTP: /mcp  |  stdio: node dist/mcp/stdio.js`);
   console.log(
-    `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | OpenAI: ${config.openaiApiKey ? 'yes' : 'no'} | Apify: ${config.apifyToken ? 'yes' : 'no'} | Shovels contractors: ${contractors.length}`,
+    `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | OpenSOS: ${config.openSosApiKey ? 'yes' : 'no'} | Contractors: ${contractors.length} | Parcels: ${parcels.length}`,
   );
 });
