@@ -323,6 +323,9 @@ export function shovelsContractorsSummary(): Record<string, unknown> {
     loaded: all.length > 0,
     load_error: loadError,
     unique_contractors: all.length,
+    aka: '~6400 contractor file / commercial_contractors_contacts.csv',
+    file: 'data/shovels_commercial_contractors/commercial_contractors_contacts.csv',
+    resource: 'pmf://shovels-contractors',
     source: 'Shovels commercial contractors (permit activity)',
     filter: meta.filter ?? 'property_type=commercial',
     date_from: meta.date_from ?? null,
@@ -337,7 +340,7 @@ export function shovelsContractorsSummary(): Record<string, unknown> {
       website: { n: website, pct: all.length ? round4(website / all.length) : 0 },
     },
     query_hint:
-      'Use pmf_shovels_contractors_query (paginated, max 50/page) or pmf_shovels_contractors_sample (≤20 random). Do not request full dumps through the model.',
+      'This IS the ~6400 contractor file (exact unique_contractors above). Read pmf://shovels-contractors, then pmf_shovels_contractors_query (max 50/page), _sample (≤20), or _export_csv. Never dump all rows into chat.',
   };
 }
 
