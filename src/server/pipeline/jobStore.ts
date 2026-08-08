@@ -93,6 +93,7 @@ export async function loadRunFromSupabase(runId: string): Promise<RunJob | null>
     error?: string;
     run?: Record<string, unknown>;
     properties?: Record<string, unknown>[];
+    contacts?: Record<string, unknown>[];
   };
   if (!bundle?.ok || !bundle.run) return null;
 
@@ -121,6 +122,33 @@ export async function loadRunFromSupabase(runId: string): Promise<RunJob | null>
     raw_google_data: p.raw_google_data === null ? undefined : p.raw_google_data,
   }));
 
+  let contactRows = bundle.contacts ?? [];
+  if (!contactRows.length) {
+    const { data: cdata, error: cerr } = await getSupabase().rpc('fetch_pmf_contacts', {
+      p_secret: ingestSecret(),
+      p_run_id: runId,
+    });
+    if (!cerr && cdata && typeof cdata === 'object') {
+      contactRows = ((cdata as { contacts?: Record<string, unknown>[] }).contacts ?? []) as Record<
+        string,
+        unknown
+      >[];
+    }
+  }
+
+  const contacts: ContactRecord[] = contactRows.map((c) => ({
+    id: String(c.id),
+    property_id: String(c.property_id),
+    run_id: String(c.run_id),
+    property_manager_company: String(c.property_manager_company ?? ''),
+    contact_name: (c.contact_name as string) ?? null,
+    contact_title: (c.contact_title as string) ?? null,
+    contact_email: (c.contact_email as string) ?? null,
+    contact_phone: (c.contact_phone as string) ?? null,
+    source: (c.source as ContactRecord['source']) ?? 'getleads',
+    match_confidence: (c.match_confidence as string) ?? null,
+  }));
+
   const progress = {
     ...emptyProgress(),
     ...((r.progress as RunProgress) ?? {}),
@@ -142,7 +170,7 @@ export async function loadRunFromSupabase(runId: string): Promise<RunJob | null>
     cost_breakdown: (r.cost_breakdown as Record<string, number>) ?? {},
     error_message: (r.error_message as string) ?? null,
     properties,
-    contacts: [],
+    contacts,
   };
   memory.set(job.id, job);
   return job;
