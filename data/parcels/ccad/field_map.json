@@ -1,0 +1,58 @@
+{
+  "source": {
+    "portal": "https://data.texas.gov",
+    "dataset": "Collin CAD Appraisal Data (2024 Certified)",
+    "resource_id": "6dqt-e958",
+    "api_url": "https://data.texas.gov/resource/6dqt-e958.json",
+    "filter": "upper(propsubtype)='COMMERCIAL'",
+    "probed_alternatives": {
+      "nne4-8riu": "Preliminary \u2014 works but lacks currval* assessed fields (InProgress)"
+    }
+  },
+  "mapping": {
+    "county": {
+      "source": null,
+      "value": "Collin",
+      "notes": "Constant"
+    },
+    "account_id": {
+      "source": "geoid",
+      "fallback": "propid",
+      "notes": "CCAD geoid account number"
+    },
+    "owner_name": {
+      "source": "ownername"
+    },
+    "mailing_address": {
+      "source": [
+        "owneraddrline1",
+        "owneraddrcity",
+        "owneraddrstate",
+        "owneraddrzip"
+      ],
+      "compose": "{owneraddrline1}, {owneraddrcity}, {owneraddrstate} {owneraddrzip}"
+    },
+    "parcel_address": {
+      "source": "situsconcatshort",
+      "fallback": "situsconcat",
+      "notes": "Street-only preferred; full concat as fallback"
+    },
+    "city": {
+      "source": "situscity"
+    },
+    "zip": {
+      "source": "situszip"
+    },
+    "assessed_value": {
+      "source": "currvalassessed",
+      "fallback": "currvalappraised"
+    },
+    "use_code": {
+      "source": "propusecode",
+      "fallback": "propcategorycode"
+    },
+    "prop_type": {
+      "source": "propsubtype"
+    }
+  }
+}
