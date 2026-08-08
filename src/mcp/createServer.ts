@@ -25,6 +25,7 @@ import type { ContactExportRow, ParsedQueryParams } from '../server/types.js';
 import {
   GUIDE_MARKDOWN,
   SERVER_INSTRUCTIONS,
+  SHOVELS_CONTRACTORS_RESOURCE,
   WHEN_TO_USE_MARKDOWN,
 } from './instructions.js';
 
@@ -56,14 +57,17 @@ function healthPayload() {
     aiArkConfigured: Boolean(config.aiArkApiKey),
     leadmagicConfigured: Boolean(config.leadmagicApiKey),
     product:
-      'SalesGlider commercial property owner → PM company → decision-maker contacts for outbound.',
+      'SalesGlider commercial property owner → PM company → decision-maker contacts for outbound, plus the cached ~6124 Shovels commercial contractor file.',
     when_to_use:
-      'Commercial property owners/landlords/PMs/decision-maker contacts in a US city, county, or radius; status/CSV of an existing PM-finder run; or querying the cached Shovels commercial contractor contact dataset (Dallas / Fort Worth / Rockwall).',
+      'Commercial property owners/landlords/PMs/decision-maker contacts in a US city, county, or radius; status/CSV of an existing PM-finder run; OR the ~6124/"~6400" Shovels commercial contractor contact file (Dallas / Fort Worth / Rockwall).',
     when_not_to_use:
-      'Google Maps local-business scrapes, residential-only lists, Smartlead/CRM sends, LLC→person resolution.',
+      'Google Maps local-business scrapes (including Maps-category contractors), residential-only lists, Smartlead/CRM sends, LLC→person resolution. The Shovels commercial GC file IS in scope here.',
     how_to_use:
-      'Read pmf://guide (or pmf://when-to-use). Property pipeline: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV. Shovels contractors (cached, free): pmf_shovels_contractors_summary → query/sample (paginated; never dump all rows into chat).',
+      'Read pmf://guide or pmf://when-to-use. For the contractor file: read pmf://shovels-contractors → pmf_shovels_contractors_summary → query/sample/export (never dump all rows). Property pipeline: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV.',
     shovels_contractors_loaded: loadShovelsContractors().length,
+    shovels_contractors_file:
+      'data/shovels_commercial_contractors/commercial_contractors_contacts.csv',
+    shovels_contractors_resource: 'pmf://shovels-contractors',
   };
 }
 
@@ -167,10 +171,10 @@ export function createPmFinderMcpServer(): McpServer {
   const server = new McpServer(
     {
       name: 'property-pm-finder',
-      version: '1.1.0',
-      title: 'SalesGlider Property PM Finder',
+      version: '1.2.0',
+      title: 'SalesGlider Property PM Finder + Shovels contractor file',
       description:
-        'USE FOR: commercial property owners, property managers, and PM decision-maker contacts in a US market (city/county/radius), plus status/CSV of those runs. DO NOT USE FOR: Google Maps local businesses, residential-only lists, Smartlead sends, or LLC→person resolution. SPEND RULE: parse/estimate are free; only pmf_confirm_run spends money and requires explicit user approval after you show the estimate. Workflow: health → parse → resolve ambiguity → show estimate → confirm_spend → poll → results/CSV. Read resources pmf://guide and pmf://when-to-use.',
+        'USE FOR: (1) commercial property owners/PMs/decision-maker contacts in a US market; (2) the cached ~6,124/"~6400" Shovels commercial contractor contact file (Dallas/Fort Worth/Rockwall) via pmf://shovels-contractors and pmf_shovels_contractors_* tools. DO NOT USE FOR: Google Maps local-business scrapes, residential-only lists, Smartlead sends, or LLC→person resolution. SPEND RULE: Shovels contractor tools are free; property parse/estimate are free; only pmf_confirm_run spends money after explicit approval. Read pmf://shovels-contractors for the GC file; pmf://guide for the property pipeline.',
     },
     {
       instructions: SERVER_INSTRUCTIONS,
@@ -203,7 +207,7 @@ export function createPmFinderMcpServer(): McpServer {
     {
       title: 'When to use this MCP (quick)',
       description:
-        'Short yes/no decision: when to use Property PM Finder vs other tools, plus the money gate.',
+        'Short yes/no decision: when to use Property PM Finder vs other tools, plus the money gate. Includes the ~6124 Shovels contractor file.',
       mimeType: 'text/markdown',
     },
     async (uri) => ({
@@ -212,6 +216,26 @@ export function createPmFinderMcpServer(): McpServer {
           uri: uri.href,
           mimeType: 'text/markdown',
           text: WHEN_TO_USE_MARKDOWN,
+        },
+      ],
+    }),
+  );
+
+  server.registerResource(
+    'pmf_shovels_contractors',
+    'pmf://shovels-contractors',
+    {
+      title: '6400 / 6124 Shovels commercial contractor file',
+      description:
+        'THE contractor file (~6,124 unique commercial GCs, often called "~6400"). Index + how to query/export. Open this when the user asks for the contractor CSV / Shovels GC list.',
+      mimeType: 'text/markdown',
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: 'text/markdown',
+          text: `${SHOVELS_CONTRACTORS_RESOURCE}\n\n## Live summary (JSON)\n\`\`\`json\n${JSON.stringify(shovelsContractorsSummary(), null, 2)}\n\`\`\`\n`,
         },
       ],
     }),
@@ -700,6 +724,45 @@ Follow this exact workflow:
     }),
   );
 
+  server.registerPrompt(
+    'pmf_query_shovels_contractors',
+    {
+      title: 'Query the 6400 / 6124 Shovels contractor file',
+      description:
+        'PRIMARY PROMPT when the user asks for the ~6400 contractor file, Shovels commercial GCs, or commercial_contractors_contacts.csv. Free local dataset.',
+      argsSchema: {
+        request: z
+          .string()
+          .optional()
+          .describe(
+            'Optional filter request, e.g. "Fort Worth contractors with email" or "export Dallas GCs"',
+          ),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `You are operating the SalesGlider MCP that hosts the cached Shovels commercial contractor file (~6,124 unique / often called "~6400").
+
+User request:
+"${request?.trim() || 'Show me the 6400 contractor file / summarize what we have.'}"
+
+Follow this exact workflow:
+1. Read resource pmf://shovels-contractors (or call pmf_shovels_contractors_summary). Confirm the file is loaded — do NOT say it is missing.
+2. Tell the user unique_contractors, places, and phone/email fill rates.
+3. If they want to search/filter: pmf_shovels_contractors_query (paginate, max 50/page). For a QA peek: pmf_shovels_contractors_sample (≤20).
+4. If they want a downloadable CSV: pmf_shovels_contractors_export_csv (prefer filters; cap 5000). Mention HTTP /api/shovels/contractors/export.csv if useful.
+5. Never dump all ~6k rows into chat. Never start the paid Propwire pipeline unless they also ask for property owners/PMs.
+6. Never invent contractor rows.`,
+          },
+        },
+      ],
+    }),
+  );
+
   const placeEnum = z
     .enum(['Dallas', 'Fort_Worth', 'Rockwall_County'])
     .optional()
@@ -708,11 +771,12 @@ Follow this exact workflow:
   server.registerTool(
     'pmf_shovels_contractors_summary',
     {
-      title: 'Shovels commercial contractors — summary',
-      description: `WHEN TO USE: User asks about the cached Shovels commercial contractor list (Dallas / Fort Worth / Rockwall County), counts, or contact fill rates.
-WHAT IT DOES: Returns summary counts only (unique contractors, by place, phone/email fill). Free. Does NOT call Shovels API.
-WHEN NOT TO USE: For browsing actual company rows — use pmf_shovels_contractors_query or pmf_shovels_contractors_sample.
-RULE: Never dump the full ~6k list into chat; summarize from this tool.`,
+      title: '6400 contractor file — summary (6124 GCs)',
+      description: `WHEN TO USE: User asks for the "6400 contractor file", "~6k GCs", Shovels commercial contractors CSV, counts, or fill rates (Dallas / Fort Worth / Rockwall).
+WHAT IT DOES: Confirms the file is loaded and returns summary counts only (unique_contractors≈6124, by place, phone/email fill). Free. Local cache — does NOT call Shovels API.
+ALIASES: commercial_contractors_contacts.csv, "~6400 contractors", DFW commercial GC list.
+WHEN NOT TO USE: For browsing company rows — use pmf_shovels_contractors_query or _sample. For CSV download — _export_csv.
+RULE: Never dump the full ~6k list into chat; summarize from this tool. Do not claim the file is missing if loaded=true.`,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -722,8 +786,8 @@ RULE: Never dump the full ~6k list into chat; summarize from this tool.`,
   server.registerTool(
     'pmf_shovels_contractors_query',
     {
-      title: 'Shovels commercial contractors — paginated query',
-      description: `WHEN TO USE: Search/filter the cached Shovels commercial contractor contacts (name, company, place, has email/phone).
+      title: '6400 contractor file — paginated query',
+      description: `WHEN TO USE: Search/filter the cached ~6124 Shovels commercial contractor contacts (name, company, place, has email/phone) — the "6400 contractor file".
 WHAT IT DOES: Returns one page of matching rows (default 25, max 50) plus total/page metadata. Free. Local dataset only.
 WHEN NOT TO USE: For counts only → summary tool. For a random QA peek → sample tool.
 RULE: Paginate. Do not loop pages to reconstruct the full dump in the model context.`,
@@ -768,8 +832,8 @@ RULE: Paginate. Do not loop pages to reconstruct the full dump in the model cont
   server.registerTool(
     'pmf_shovels_contractors_sample',
     {
-      title: 'Shovels commercial contractors — random sample',
-      description: `WHEN TO USE: Spot-check data quality of the cached Shovels contractor contacts.
+      title: '6400 contractor file — random sample',
+      description: `WHEN TO USE: Spot-check data quality of the ~6124/"~6400" Shovels commercial contractor file.
 WHAT IT DOES: Returns up to 20 random matching rows. Free.
 WHEN NOT TO USE: For exhaustive search — use the paginated query tool.`,
       inputSchema: {
@@ -801,8 +865,8 @@ WHEN NOT TO USE: For exhaustive search — use the paginated query tool.`,
   server.registerTool(
     'pmf_shovels_contractors_get',
     {
-      title: 'Shovels commercial contractor — get by id',
-      description: `WHEN TO USE: Look up one cached contractor by Shovels id.
+      title: '6400 contractor file — get by id',
+      description: `WHEN TO USE: Look up one row from the ~6124 Shovels commercial contractor file by Shovels id.
 WHAT IT DOES: Returns a single row or not-found. Free.`,
       inputSchema: {
         id: z.string().min(1).describe('Shovels contractor id'),
@@ -819,9 +883,9 @@ WHAT IT DOES: Returns a single row or not-found. Free.`,
   server.registerTool(
     'pmf_shovels_contractors_export_csv',
     {
-      title: 'Shovels commercial contractors — filtered CSV',
-      description: `WHEN TO USE: User wants a CSV file of the cached Shovels commercial contractors (optionally filtered).
-WHAT IT DOES: Returns CSV text for matching rows, capped at 5000. Free. Local dataset only.
+      title: '6400 contractor file — export CSV',
+      description: `WHEN TO USE: User wants the "6400 contractor file" / commercial_contractors_contacts.csv / downloadable Shovels commercial GC CSV (optionally filtered).
+WHAT IT DOES: Returns CSV text for matching rows, capped at 5000. Free. Local dataset only. Also available at HTTP GET /api/shovels/contractors/export.csv.
 RULE: Prefer filters (place/has_email/q). Do not paste the entire CSV into chat — give a short summary and offer the CSV payload for download/save.`,
       inputSchema: {
         q: z.string().optional(),

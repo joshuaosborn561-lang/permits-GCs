@@ -163,8 +163,9 @@ export function mountMcpHttp(app: Express): void {
         'pmf_run_commercial_pull',
         'pmf_check_run_status',
         'pmf_export_contacts',
+        'pmf_query_shovels_contractors',
       ],
-      resources: ['pmf://guide', 'pmf://when-to-use'],
+      resources: ['pmf://guide', 'pmf://when-to-use', 'pmf://shovels-contractors'],
       http: {
         shovels_contractors_summary: '/api/shovels/contractors/summary',
         shovels_contractors_query: '/api/shovels/contractors',
