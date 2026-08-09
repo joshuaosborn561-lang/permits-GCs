@@ -41,11 +41,14 @@ The old Propwire → LoopNet → Google property-owner cascade was **removed**. 
 1. \`parcels_summary\`
 2. \`parcels_query\` (filter county / owner_name / city / zip / use_code / owner_type)
 3. \`sync_to_supabase\` with dataset=parcels
-4. For each **local_llc** of interest: \`opensos_lookup(entity_name, state='TX')\` (writes to Supabase)
+4. For **local_llc** owners only: \`opensos_estimate\` → show estimated live requests + \$ cost + monthly remaining → **wait for explicit human approval** → \`opensos_lookup(..., confirm_spend=true)\`
 
-### Money
+### Money / OpenSOS quota
 - Shovels + parcels tools: free (local files)
-- \`opensos_lookup\`: ~$0.03/live lookup when not cached; confirm with user before bulk OpenSOS runs
+- OpenSOS: **hard cap 1000 live lookups / UTC month**
+- **ALWAYS** call \`opensos_estimate\` first. Tell the user estimated_live_requests and estimated_cost_usd. Do **not** call live OpenSOS until they explicitly approve (e.g. "approve opensos", "confirm").
+- \`opensos_lookup\` without \`confirm_spend=true\` is blocked for live calls (cache hits OK).
+- Check \`opensos_usage\` anytime for remaining quota.
 
 ## Tool cheat sheet
 | Tool | Spends? | Purpose |
@@ -60,7 +63,9 @@ The old Propwire → LoopNet → Google property-owner cascade was **removed**. 
 | parcels_query | No | Paginated parcels |
 | parcels_sample | No | ≤20 random parcels |
 | parcels_export_csv | No | Filtered parcel CSV (cap 5000) |
-| opensos_lookup | ~$0.03 | Entity → officers (local_llc) |
+| opensos_usage | No | Monthly quota used/remaining (cap 1000) |
+| opensos_estimate | No | Required pre-spend estimate |
+| opensos_lookup | ~$0.03 live | Officers; needs confirm_spend after approval |
 | sync_to_supabase | No | Maps-style S2S sync; counts only |
 `.trim();
 

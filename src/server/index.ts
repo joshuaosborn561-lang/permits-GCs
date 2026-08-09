@@ -8,6 +8,7 @@ import { hasSupabase } from './lib/supabase.js';
 import { openSosRouter } from './routes/openSos.js';
 import { parcelsRouter } from './routes/parcels.js';
 import { shovelsContractorsRouter } from './routes/shovelsContractors.js';
+import { getOpenSosUsage } from './services/openSos.js';
 import { loadParcels, parcelsSummary } from './services/parcels.js';
 import { loadShovelsContractors } from './services/shovelsContractors.js';
 import { syncToSupabase } from './services/syncToSupabase.js';
@@ -19,13 +20,15 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '4mb' }));
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
   res.json({
     ok: true,
     product: 'Permit & Parcel MCP',
     demoMode: config.demoMode,
     supabaseConfigured: hasSupabase(),
     openSosConfigured: Boolean(config.openSosApiKey),
+    openSosMonthlyLimit: config.openSosMonthlyLimit,
+    openSosUsage: await getOpenSosUsage(),
     shovelsContractorsLoaded: loadShovelsContractors().length,
     parcelsLoaded: loadParcels().length,
     parcels: parcelsSummary(),

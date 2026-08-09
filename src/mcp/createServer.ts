@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { config } from '../server/config.js';
 import { hasSupabase } from '../server/lib/supabase.js';
-import { openSosLookup } from '../server/services/openSos.js';
+import { getOpenSosUsage, openSosEstimate, openSosLookup } from '../server/services/openSos.js';
 import {
   loadParcels,
   parcelsSummary,
@@ -55,6 +55,7 @@ function healthPayload() {
     demoMode: config.demoMode,
     supabaseConfigured: hasSupabase(),
     openSosConfigured: Boolean(config.openSosApiKey),
+    openSosMonthlyLimit: config.openSosMonthlyLimit,
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
@@ -328,16 +329,51 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set; opensos_lookup on
     },
   );
 
-  // ---- OpenSOS ----
+  // ---- OpenSOS (estimate → human approval → confirm_spend) ----
+
+  server.registerTool(
+    'opensos_usage',
+    {
+      title: 'OpenSOS monthly usage (quota)',
+      description: `WHEN TO USE: Check how many OpenSOS live lookups remain this month (limit 1000).
+WHAT IT DOES: Returns used/remaining/limit for the current UTC month. Free. No API spend.`,
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => jsonResult(await getOpenSosUsage()),
+  );
+
+  server.registerTool(
+    'opensos_estimate',
+    {
+      title: 'OpenSOS estimate (required before spend)',
+      description: `WHEN TO USE: Before ANY live OpenSOS lookup. Pass one or many entity names.
+WHAT IT DOES: Classifies cache vs live vs skip; returns estimated_live_requests, estimated_cost_usd, monthly remaining. Does NOT call OpenSOS API.
+NEXT: Show the estimate to the human. Wait for explicit approval ("approve opensos" / "confirm"). Only then opensos_lookup(..., confirm_spend=true).
+HARD RULE: Never run live OpenSOS without showing this estimate and getting approval.`,
+      inputSchema: {
+        entity_names: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(200)
+          .describe('Entity names to estimate'),
+        state: z.string().optional().describe("Default 'TX'"),
+        force: z.boolean().optional().describe('Treat cache as miss'),
+        allow_non_llc: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => jsonResult(await openSosEstimate(args)),
+  );
 
   server.registerTool(
     'opensos_lookup',
     {
-      title: 'OpenSOS entity → officers (local LLC)',
-      description: `WHEN TO USE: Parcel owner classified as local_llc — need officers / managing members / registered agent.
-WHAT IT DOES: Calls OpenSOS (~$0.03/live lookup), writes result to Supabase, returns compact officer summary.
-WHEN NOT TO USE: institutional (drop) or individual (owner is DM). Confirm before bulk runs.
-ENV: OPENSOSDATA_API_KEY`,
+      title: 'OpenSOS entity → officers (local LLC, spend-gated)',
+      description: `WHEN TO USE: After opensos_estimate + explicit human approval for live calls.
+WHAT IT DOES: Cache hit = free (no confirm needed). Live call requires confirm_spend=true, counts against 1000/month, ~$0.03, writes to Supabase.
+WHEN NOT TO USE: institutional (drop) or individual (owner is DM). Never batch-live without estimate + approval.
+HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
       inputSchema: {
         entity_name: z.string().min(1),
         state: z.string().optional().describe("Default 'TX'"),
@@ -346,6 +382,12 @@ ENV: OPENSOSDATA_API_KEY`,
           .boolean()
           .optional()
           .describe('Override local_llc gate (use sparingly)'),
+        confirm_spend: z
+          .boolean()
+          .optional()
+          .describe(
+            'Must be true for live OpenSOS HTTP calls, and only after opensos_estimate + explicit user approval',
+          ),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
@@ -439,7 +481,7 @@ Request: "${request || 'Summarize the contractor file'}"
 Request: "${request || 'Summarize commercial parcels'}"
 1) parcels_summary
 2) parcels_query with filters; note owner_type split
-3) Drop institutional. For local_llc samples, opensos_lookup (confirm spend for bulk)
+3) Drop institutional. For local_llc: opensos_estimate → show live request count + $ + monthly remaining → WAIT for explicit approval → opensos_lookup(confirm_spend=true). Cap 1000/month.
 4) sync_to_supabase(dataset=parcels) then select count(*)
 Propwire cascade is removed — do not offer it.`,
           },
