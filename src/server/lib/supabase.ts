@@ -1,12 +1,13 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../config.js';
 
-const SCHEMA = 'property_pm_finder';
+/** Active app schema (legacy `property_pm_finder` tables are unused by Permit & Parcel). */
+const SCHEMA = 'permit_parcel';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let client: SupabaseClient<any, any, any> | null = null;
 
-/** Same credential trio as the Google Maps scraper Railway service. */
+/** Same credential trio as the Google Maps scraper Railway service (google-maps-scraper-leads). */
 export function hasSupabase(): boolean {
   return Boolean(config.supabaseUrl && config.supabaseAnonKey && config.supabaseIngestSecret);
 }

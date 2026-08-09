@@ -69,12 +69,12 @@ function healthPayload() {
   };
 }
 
-export function createPmFinderMcpServer(): McpServer {
+export function createPermitParcelMcpServer(): McpServer {
   const server = new McpServer(
     {
-      name: 'permit-parcel',
+      name: 'permits-gcs',
       version: '2.0.0',
-      title: 'Permit & Parcel MCP',
+      title: 'Permit & Parcel MCP (permits-GCs)',
       description:
         'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs); (2) DCAD/TAD/CCAD commercial parcels with owner_type classification; (3) OpenSOS officer lookup for local LLCs. DO NOT USE FOR: Propwire/LoopNet (removed), Maps scrapes, institutional fund owners. Prefer sync_to_supabase + select count(*) over dumping rows into chat.',
     },
@@ -493,5 +493,5 @@ Propwire cascade is removed — do not offer it.`,
   return server;
 }
 
-/** @deprecated alias */
-export const createPermitParcelMcpServer = createPmFinderMcpServer;
+/** @deprecated alias — old Property PM Finder name */
+export const createPmFinderMcpServer = createPermitParcelMcpServer;

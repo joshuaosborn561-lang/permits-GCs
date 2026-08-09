@@ -1,7 +1,7 @@
 export const SERVER_INSTRUCTIONS = `
 # Permit & Parcel MCP — Claude operating manual
 
-You are connected to **permit-parcel** (SalesGlider). Two jobs only:
+You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub repo \`permits-GCs\`). Two jobs only:
 
 1. **Shovels commercial GC contacts** (Dallas / Fort Worth / Rockwall) — cached, free
 2. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD) + **OpenSOS** local-LLC officer lookup

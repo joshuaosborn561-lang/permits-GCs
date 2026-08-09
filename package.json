@@ -1,11 +1,17 @@
 {
-  "name": "permit-parcel-mcp",
+  "name": "permits-gcs",
   "version": "2.0.0",
   "private": true,
-  "description": "Permit & Parcel MCP — Shovels commercial GCs + DCAD/TAD/CCAD parcels + OpenSOS",
+  "description": "Permit & Parcel MCP (permits-GCs) — Shovels commercial GCs + DCAD/TAD/CCAD parcels + OpenSOS",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshuaosborn561-lang/permits-GCs.git"
+  },
+  "homepage": "https://github.com/joshuaosborn561-lang/permits-GCs",
   "type": "module",
   "bin": {
-    "permit-parcel-mcp": "./dist/mcp/stdio.js"
+    "permit-parcel-mcp": "./dist/mcp/stdio.js",
+    "permits-gcs-mcp": "./dist/mcp/stdio.js"
   },
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",

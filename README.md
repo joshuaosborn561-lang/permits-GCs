@@ -1,4 +1,7 @@
-# Permit & Parcel MCP
+# Permit & Parcel MCP (`permits-GCs`)
+
+GitHub: https://github.com/joshuaosborn561-lang/permits-GCs  
+(formerly `property-management-scraper`)
 
 SalesGlider MCP for:
 

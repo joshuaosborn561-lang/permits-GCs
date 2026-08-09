@@ -337,7 +337,7 @@ export function shovelsContractorsSummary(): Record<string, unknown> {
       website: { n: website, pct: all.length ? round4(website / all.length) : 0 },
     },
     query_hint:
-      'Use pmf_shovels_contractors_query (paginated, max 50/page) or pmf_shovels_contractors_sample (≤20 random). Do not request full dumps through the model.',
+      'Use permits_contractors_query (paginated, max 50/page) or permits_contractors_sample (≤20 random). Prefer sync_to_supabase for bulk. Do not dump all rows into chat.',
   };
 }
 

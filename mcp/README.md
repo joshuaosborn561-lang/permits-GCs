@@ -1,6 +1,7 @@
 # Permit & Parcel MCP
 
-Remote: `https://workspace-production-4702.up.railway.app/mcp` (authless Streamable HTTP).
+Repo: https://github.com/joshuaosborn561-lang/permits-GCs  
+Remote MCP: `https://workspace-production-4702.up.railway.app/mcp` (authless Streamable HTTP).
 
 ## Tools
 

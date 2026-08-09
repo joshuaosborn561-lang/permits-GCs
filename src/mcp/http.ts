@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { createPmFinderMcpServer } from './createServer.js';
+import { createPermitParcelMcpServer } from './createServer.js';
 
 /**
  * Mount Streamable HTTP MCP at /mcp for Claude / Cursor remote connectors.
@@ -51,7 +51,7 @@ export function mountMcpHttp(app: Express): void {
           }
         };
 
-        const server = createPmFinderMcpServer();
+        const server = createPermitParcelMcpServer();
         await server.connect(transport);
         await transport.handleRequest(req, res, req.body);
         return;
