@@ -4,10 +4,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { mountMcpHttp } from '../mcp/http.js';
 import { config } from './config.js';
-import { hasSupabase } from './lib/supabase.js';
+import { hasSupabase, SCHEMA } from './lib/supabase.js';
+import { supabaseTargetMeta } from './lib/supabaseTarget.js';
 import { openSosRouter } from './routes/openSos.js';
 import { parcelsRouter } from './routes/parcels.js';
 import { shovelsContractorsRouter } from './routes/shovelsContractors.js';
+import { buildOperators } from './services/operators.js';
 import { getOpenSosUsage } from './services/openSos.js';
 import { loadParcels, parcelsSummary } from './services/parcels.js';
 import { loadShovelsContractors } from './services/shovelsContractors.js';
@@ -21,11 +23,15 @@ app.use(cors());
 app.use(express.json({ limit: '4mb' }));
 
 app.get('/api/health', async (_req, res) => {
+  const target = supabaseTargetMeta();
   res.json({
     ok: true,
     product: 'Permit & Parcel MCP',
     demoMode: config.demoMode,
     supabaseConfigured: hasSupabase(),
+    supabase_project: target.supabase_project,
+    supabase_schema: target.supabase_schema ?? SCHEMA,
+    supabase_url: target.supabase_url,
     openSosConfigured: Boolean(config.openSosApiKey),
     openSosMonthlyLimit: config.openSosMonthlyLimit,
     openSosUsage: await getOpenSosUsage(),
@@ -62,6 +68,15 @@ app.post('/api/sync-to-supabase', async (req, res) => {
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'sync failed' });
+  }
+});
+
+app.post('/api/build-operators', async (req, res) => {
+  try {
+    const result = await buildOperators(req.body ?? {});
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'build_operators failed' });
   }
 });
 

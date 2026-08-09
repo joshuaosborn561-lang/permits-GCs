@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { CountyCode, OwnerType, ParcelRecord } from '../types.js';
@@ -109,8 +108,9 @@ function countyFromFolder(folder: string): CountyCode | null {
   return null;
 }
 
+/** Stable natural-key id — must match ingest_permit_parcel_parcels upsert key. */
 function parcelId(county: CountyCode, accountId: string): string {
-  return createHash('sha1').update(`${county}:${accountId}`).digest('hex').slice(0, 32);
+  return `${county}:${accountId}`;
 }
 
 function loadFile(county: CountyCode, path: string): ParcelRecord[] {
@@ -128,7 +128,6 @@ function loadFile(county: CountyCode, path: string): ParcelRecord[] {
   const iValue = idx('assessed_value');
   const iUse = idx('use_code');
   const iProp = idx('prop_type');
-  const iOwnerType = idx('owner_type');
 
   const out: ParcelRecord[] = [];
   for (let r = 1; r < rows.length; r++) {
@@ -138,8 +137,8 @@ function loadFile(county: CountyCode, path: string): ParcelRecord[] {
     if (!account && !owner) continue;
     const accountId = account || `row-${r}`;
     const ownerName = owner || '';
-    const ownerType =
-      (emptyToNull(cols[iOwnerType]) as OwnerType | null) || classifyOwnerType(ownerName);
+    // Always classify from owner_name so municipalities leave the unknown bucket.
+    const ownerType = classifyOwnerType(ownerName);
     out.push({
       id: parcelId(county, accountId),
       county,
@@ -303,7 +302,42 @@ export function parcelsToCsv(rows: ParcelRecord[]): string {
   );
 }
 
-/** All matching rows for server-side sync (not for MCP chat dumps). */
-export function collectParcelsForSync(q: ParcelQuery, cap = 50000): ParcelRecord[] {
-  return filterAll(q).slice(0, cap);
+export type ParcelSyncCollection = {
+  /** Rows after filter, before natural-key dedupe (CSV may contain dups). */
+  source_rows: number;
+  /** Unique (county, account_id) rows to upsert. */
+  parcels: ParcelRecord[];
+  duplicates_collapsed: number;
+};
+
+/**
+ * All matching rows for server-side sync (not for MCP chat dumps).
+ * No silent cap — callers must sync the full matching set or paginate explicitly.
+ * Dedupes on (county, account_id) so upsert chunks never hit
+ * "ON CONFLICT DO UPDATE command cannot affect row a second time".
+ */
+export function collectParcelsForSync(q: ParcelQuery): ParcelSyncCollection {
+  const matched = filterAll(q);
+  const byKey = new Map<string, ParcelRecord>();
+  for (const p of matched) {
+    const key = `${p.county}\0${p.account_id}`;
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, p);
+      continue;
+    }
+    // Prefer the row with more filled fields / higher assessed value.
+    const score = (x: ParcelRecord) =>
+      (x.assessed_value != null ? 4 : 0) +
+      (x.mailing_address ? 2 : 0) +
+      (x.parcel_address ? 1 : 0) +
+      (x.assessed_value ?? 0) / 1e12;
+    if (score(p) >= score(prev)) byKey.set(key, p);
+  }
+  const parcels = [...byKey.values()];
+  return {
+    source_rows: matched.length,
+    parcels,
+    duplicates_collapsed: matched.length - parcels.length,
+  };
 }

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
 import { createPermitParcelMcpServer } from './createServer.js';
 
 /**
@@ -125,6 +126,7 @@ export function mountMcpHttp(app: Express): void {
   });
 
   app.get('/mcp/health', (_req, res) => {
+    const target = supabaseTargetMeta();
     res.json({
       ok: true,
       product: 'Permit & Parcel MCP',
@@ -135,6 +137,8 @@ export function mountMcpHttp(app: Express): void {
       supportsGetSse: true,
       enableJsonResponse: true,
       activeSessions: Object.keys(transports).length,
+      supabase_project: target.supabase_project,
+      supabase_schema: target.supabase_schema,
       tools: [
         'health',
         'permits_contractors_summary',
@@ -149,6 +153,7 @@ export function mountMcpHttp(app: Express): void {
         'opensos_usage',
         'opensos_estimate',
         'opensos_lookup',
+        'build_operators',
         'sync_to_supabase',
       ],
       prompts: ['pp_query_contractors', 'pp_query_parcels'],
@@ -161,9 +166,10 @@ export function mountMcpHttp(app: Express): void {
         opensos_usage: 'GET /api/opensos/usage',
         opensos_estimate: 'POST /api/opensos/estimate',
         opensos_lookup: 'POST /api/opensos/lookup',
+        build_operators: 'POST /api/build-operators',
         sync_to_supabase: 'POST /api/sync-to-supabase',
       },
-      note: 'Authless MCP. Propwire cascade removed. Prefer sync_to_supabase + select count(*).',
+      note: 'Authless MCP. Propwire cascade removed. Prefer sync_to_supabase + select count(*). Check supabase_project on /api/health.',
     });
   });
 }

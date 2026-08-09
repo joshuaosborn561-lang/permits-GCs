@@ -1,8 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { config } from '../server/config.js';
-import { hasSupabase } from '../server/lib/supabase.js';
+import { hasSupabase, SCHEMA } from '../server/lib/supabase.js';
+import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
 import { getOpenSosUsage, openSosEstimate, openSosLookup } from '../server/services/openSos.js';
+import { buildOperators } from '../server/services/operators.js';
 import {
   loadParcels,
   parcelsSummary,
@@ -45,25 +47,29 @@ const placeEnum = z
 
 const countyEnum = z.enum(['Dallas', 'Tarrant', 'Collin']).optional();
 const ownerTypeEnum = z
-  .enum(['individual', 'local_llc', 'institutional', 'unknown'])
+  .enum(['individual', 'local_llc', 'institutional', 'municipal', 'unknown'])
   .optional();
 
 function healthPayload() {
+  const target = supabaseTargetMeta();
   return {
     ok: true,
     product: 'Permit & Parcel MCP',
     demoMode: config.demoMode,
     supabaseConfigured: hasSupabase(),
+    supabase_project: target.supabase_project,
+    supabase_schema: target.supabase_schema ?? SCHEMA,
+    supabase_url: target.supabase_url,
     openSosConfigured: Boolean(config.openSosApiKey),
     openSosMonthlyLimit: config.openSosMonthlyLimit,
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
-      'Shovels commercial GCs; DCAD/TAD/CCAD commercial parcels; OpenSOS for local LLC officers.',
+      'Shovels commercial GCs; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; OpenSOS for local LLC officers only after estimate + approval.',
     when_not_to_use:
-      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund outreach, bulk row dumps in chat.',
+      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, bulk OpenSOS/SOSDirect LLC unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Contractors: permits_contractors_summary → query/sample → sync_to_supabase. Parcels: parcels_summary → parcels_query → sync_to_supabase → opensos_lookup for local_llc only. Verify with select count(*).',
+      'Contractors: permits_contractors_summary → query/sample → sync_to_supabase. Parcels: parcels_summary → parcels_query → sync_to_supabase → build_operators → opensos_lookup for local_llc only after estimate + approval. Verify with select count(*). Confirm supabase_project before inspecting tables.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -76,7 +82,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs); (2) DCAD/TAD/CCAD commercial parcels with owner_type classification; (3) OpenSOS officer lookup for local LLCs. DO NOT USE FOR: Propwire/LoopNet (removed), Maps scrapes, institutional fund owners. Prefer sync_to_supabase + select count(*) over dumping rows into chat.',
+        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs); (2) DCAD/TAD/CCAD commercial parcels with owner_type including municipal; (3) build_operators mailing-address rollup; (4) OpenSOS for local LLCs after estimate + approval. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, bulk paid SOS unmasking. Prefer sync_to_supabase / build_operators + select count(*).',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -394,6 +400,42 @@ HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
     async (args) => jsonResult(await openSosLookup(args)),
   );
 
+  // ---- Operators (mailing-address rollup) ----
+
+  server.registerTool(
+    'build_operators',
+    {
+      title: 'build_operators — mailing-address operator rollup',
+      description: `WHEN TO USE: Collapse shell LLCs into real operators by normalised tax-bill mailing address.
+WHAT IT DOES: Groups local CAD parcels by mailing address (strips C/O/ATTN/%); excludes out-of-state, municipal, and tax-department addresses; writes permit_parcel.operators; returns COUNTS only.
+DEFAULTS: min_parcels=2, min_llcs=1, exclude_out_of_state/municipal/tax_departments=true, home_states=TX.
+PRIME FILTER: min_llcs=3, min_portfolio_value=5000000.
+DO NOT buy OpenSOS/SOSDirect for every LLC — resolve operators first; prefer free Texas Comptroller PIR later.`,
+      inputSchema: {
+        min_parcels: z.number().int().min(1).optional(),
+        min_llcs: z.number().int().min(1).optional(),
+        min_portfolio_value: z.number().int().min(0).optional(),
+        exclude_out_of_state: z.boolean().optional(),
+        exclude_municipal: z.boolean().optional(),
+        exclude_tax_departments: z.boolean().optional(),
+        home_states: z
+          .string()
+          .optional()
+          .describe('Comma-separated home state codes, default TX'),
+        target_schema: z.string().optional(),
+        target_table: z.string().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await buildOperators(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'build_operators failed');
+      }
+    },
+  );
+
   // ---- Sync ----
 
   server.registerTool(
@@ -401,8 +443,8 @@ HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
     {
       title: 'sync_to_supabase — Maps-style S2S sync (counts only)',
       description: `WHEN TO USE: Persist parcels and/or Shovels contractors to Supabase without loading rows into chat.
-WHAT IT DOES: Server-to-server upsert into permit_parcel.parcels (when parcels) + public.scrape_jobs/leads/exports. Returns COUNTS + verify_sql only.
-NEXT: Run verify_sql select count(*).`,
+WHAT IT DOES: Full matching set (no silent 50k cap). Upserts permit_parcel.parcels on (county, account_id). Honours county. Fails if scrape rows insert but schema upsert is 0. Returns COUNTS + supabase_project + verify_sql only.
+NEXT: Run verify_sql select count(*). Confirm supabase_project matches the project you inspect.`,
       inputSchema: {
         dataset: z
           .enum(['parcels', 'contractors', 'all'])

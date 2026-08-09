@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
+import { getSupabase, hasSupabase, ingestSecret, SCHEMA } from '../lib/supabase.js';
+import { supabaseProjectRef, supabaseTargetMeta } from '../lib/supabaseTarget.js';
 import type { ParcelRecord } from '../types.js';
 import {
   collectParcelsForSync,
@@ -24,9 +25,11 @@ export interface SyncCounts {
 export interface SyncResult {
   ok: boolean;
   supabase_configured: boolean;
+  supabase_project: string | null;
+  supabase_schema: string;
   dataset: string;
   scrape_job_id: string;
-  counts: SyncCounts & Record<string, number | string>;
+  counts: SyncCounts & Record<string, number | string | boolean | null>;
   verify_sql: string[];
   error?: string;
   assistant_instructions: string;
@@ -34,6 +37,13 @@ export interface SyncResult {
 
 function tagsFor(dataset: string, extra: string[] = []): string[] {
   return ['permit_parcel', dataset, ...extra].filter(Boolean);
+}
+
+function baseMeta() {
+  return {
+    supabase_configured: hasSupabase(),
+    ...supabaseTargetMeta(),
+  };
 }
 
 async function upsertJob(opts: {
@@ -159,8 +169,7 @@ async function upsertParcelRows(parcels: ParcelRecord[]): Promise<number> {
       p_rows: chunk,
     });
     if (error) {
-      console.warn('[sync] ingest_permit_parcel_parcels', error.message);
-      break;
+      throw new Error(`ingest_permit_parcel_parcels failed at offset ${i}: ${error.message}`);
     }
     n += Number((data as { upserted?: number })?.upserted ?? chunk.length);
   }
@@ -169,9 +178,11 @@ async function upsertParcelRows(parcels: ParcelRecord[]): Promise<number> {
 
 export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncResult> {
   const jobId = `permit-parcels-${randomUUID().slice(0, 8)}`;
+  const meta = baseMeta();
   const base: SyncResult = {
     ok: false,
-    supabase_configured: hasSupabase(),
+    ...meta,
+    supabase_schema: SCHEMA,
     dataset: 'parcels',
     scrape_job_id: jobId,
     counts: {
@@ -180,19 +191,42 @@ export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncRe
       rows_deleted: 0,
       export_bytes: 0,
       dataset: 'parcels',
+      supabase_project: meta.supabase_project,
+      supabase_schema: SCHEMA,
     },
     verify_sql: [
       `select count(*) from public.scrape_leads where job_id = '${jobId}';`,
       `select count(*) from permit_parcel.parcels;`,
+      `select count(distinct (county, account_id)) from permit_parcel.parcels;`,
       `select owner_type, count(*) from permit_parcel.parcels group by 1;`,
+      ...(q.county
+        ? [`select count(*) from permit_parcel.parcels where county = '${String(q.county)}';`]
+        : []),
     ],
     assistant_instructions:
-      'Parcel sync finished server-to-server. Verify with verify_sql count(*) only — do not pull rows into chat.',
+      'Parcel sync finished server-to-server. Verify with verify_sql count(*) only — do not pull rows into chat. Target project is supabase_project / supabase_schema.',
   };
   if (!hasSupabase()) return { ...base, error: 'Supabase not configured' };
 
-  const parcels = collectParcelsForSync(q);
-  const schemaUpserted = await upsertParcelRows(parcels);
+  const collected = collectParcelsForSync(q);
+  const parcels = collected.parcels;
+  let schemaUpserted = 0;
+  try {
+    schemaUpserted = await upsertParcelRows(parcels);
+  } catch (err) {
+    return {
+      ...base,
+      error: err instanceof Error ? err.message : String(err),
+      counts: {
+        ...base.counts,
+        parcels_source_rows: collected.source_rows,
+        parcels_matched: parcels.length,
+        duplicates_collapsed: collected.duplicates_collapsed,
+        permit_parcel_schema_upserted: 0,
+      },
+    };
+  }
+
   const tags = tagsFor('parcels', q.county ? [String(q.county).toLowerCase()] : []);
   const jobErr = await upsertJob({
     id: jobId,
@@ -205,7 +239,38 @@ export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncRe
   const leads = parcels.map(parcelToLead);
   const { deleted, inserted, error } = await replaceLeads(jobId, tags, leads);
   if (error) return { ...base, error };
-  const exportBytes = await upsertExport(jobId, `${jobId}.csv`, parcelsToCsv(parcels));
+
+  if (inserted > 0 && schemaUpserted === 0) {
+    return {
+      ...base,
+      ok: false,
+      error:
+        `Schema upsert failed silently: rows_inserted=${inserted} but permit_parcel_schema_upserted=0. ` +
+        `Rows may be in scrape_leads only. Check ingest_permit_parcel_parcels / county filter / schema.`,
+      counts: {
+        scrape_job_id: jobId,
+        rows_inserted: inserted,
+        rows_deleted: deleted,
+        export_bytes: 0,
+        dataset: 'parcels',
+        parcels_source_rows: collected.source_rows,
+        parcels_matched: parcels.length,
+        duplicates_collapsed: collected.duplicates_collapsed,
+        permit_parcel_schema_upserted: schemaUpserted,
+        truncated: false,
+        has_more: false,
+        county_filter: q.county ?? null,
+        supabase_project: meta.supabase_project,
+        supabase_schema: SCHEMA,
+      },
+    };
+  }
+
+  // Export CSV can be huge for full sync — skip writing mega CSVs to scrape_exports.
+  let exportBytes = 0;
+  if (parcels.length <= 10_000) {
+    exportBytes = await upsertExport(jobId, `${jobId}.csv`, parcelsToCsv(parcels));
+  }
 
   return {
     ...base,
@@ -216,17 +281,26 @@ export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncRe
       rows_deleted: deleted,
       export_bytes: exportBytes,
       dataset: 'parcels',
+      parcels_source_rows: collected.source_rows,
       parcels_matched: parcels.length,
+      duplicates_collapsed: collected.duplicates_collapsed,
       permit_parcel_schema_upserted: schemaUpserted,
+      truncated: false,
+      has_more: false,
+      county_filter: q.county ?? null,
+      supabase_project: meta.supabase_project,
+      supabase_schema: SCHEMA,
     },
   };
 }
 
 export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promise<SyncResult> {
   const jobId = `permit-contractors-${randomUUID().slice(0, 8)}`;
+  const meta = baseMeta();
   const base: SyncResult = {
     ok: false,
-    supabase_configured: hasSupabase(),
+    ...meta,
+    supabase_schema: SCHEMA,
     dataset: 'shovels_contractors',
     scrape_job_id: jobId,
     counts: {
@@ -235,6 +309,8 @@ export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promis
       rows_deleted: 0,
       export_bytes: 0,
       dataset: 'shovels_contractors',
+      supabase_project: meta.supabase_project,
+      supabase_schema: SCHEMA,
     },
     verify_sql: [`select count(*) from public.scrape_leads where job_id = '${jobId}';`],
     assistant_instructions:
@@ -242,13 +318,12 @@ export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promis
   };
   if (!hasSupabase()) return { ...base, error: 'Supabase not configured' };
 
-  // Gather matching contractors via pagination (server-side, not chat)
   const items = [];
   let page = 1;
   for (;;) {
     const batch = queryShovelsContractors({ ...q, page, page_size: 50 });
     items.push(...batch.items);
-    if (page >= batch.total_pages || items.length >= 10000) break;
+    if (page >= batch.total_pages) break;
     page += 1;
   }
 
@@ -296,6 +371,10 @@ export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promis
       dataset: 'shovels_contractors',
       contractors_matched: items.length,
       contractors_loaded: loadShovelsContractors().length,
+      truncated: false,
+      has_more: false,
+      supabase_project: meta.supabase_project,
+      supabase_schema: SCHEMA,
     },
   };
 }
@@ -304,7 +383,12 @@ export async function syncToSupabase(opts: {
   dataset: 'parcels' | 'contractors' | 'all';
   parcel_query?: ParcelQuery;
   contractor_query?: ContractorQuery;
-}): Promise<{ ok: boolean; results: SyncResult[] }> {
+}): Promise<{
+  ok: boolean;
+  supabase_project: string | null;
+  supabase_schema: string;
+  results: SyncResult[];
+}> {
   const results: SyncResult[] = [];
   if (opts.dataset === 'parcels' || opts.dataset === 'all') {
     results.push(await syncParcelsToSupabase(opts.parcel_query ?? {}));
@@ -312,5 +396,10 @@ export async function syncToSupabase(opts: {
   if (opts.dataset === 'contractors' || opts.dataset === 'all') {
     results.push(await syncContractorsToSupabase(opts.contractor_query ?? {}));
   }
-  return { ok: results.every((r) => r.ok), results };
+  return {
+    ok: results.every((r) => r.ok),
+    supabase_project: supabaseProjectRef(),
+    supabase_schema: SCHEMA,
+    results,
+  };
 }

@@ -1,4 +1,9 @@
-export type OwnerType = 'individual' | 'local_llc' | 'institutional' | 'unknown';
+export type OwnerType =
+  | 'individual'
+  | 'local_llc'
+  | 'institutional'
+  | 'municipal'
+  | 'unknown';
 
 export type CountyCode = 'Dallas' | 'Tarrant' | 'Collin';
 
