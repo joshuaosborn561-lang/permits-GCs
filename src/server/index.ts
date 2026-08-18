@@ -21,6 +21,7 @@ app.get('/api/health', (_req, res) => {
     ok: true,
     demoMode: config.demoMode,
     openaiModel: config.openaiModel,
+    openaiBaseUrl: config.openaiBaseUrl || null,
     loopnetMode: config.loopnetMode,
     loopnetBatchSize: config.loopnetBatchSize,
     loopnetIncludeDetails: config.loopnetIncludeDetails,

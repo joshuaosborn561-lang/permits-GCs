@@ -9,7 +9,10 @@ function getClient(): OpenAI {
     throw new Error('OPENAI_API_KEY is not set');
   }
   if (!client) {
-    client = new OpenAI({ apiKey: config.openaiApiKey });
+    client = new OpenAI({
+      apiKey: config.openaiApiKey,
+      ...(config.openaiBaseUrl ? { baseURL: config.openaiBaseUrl } : {}),
+    });
   }
   return client;
 }

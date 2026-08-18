@@ -64,7 +64,7 @@ export function estimateCost(params: ParsedQueryParams): CostEstimate {
       loopnetModeAssumption(),
       `Google search capped at ${config.googleSearchHardCap} queries`,
       `Propwire full detail: $${COST.propwirePerRecord}/record`,
-      `OpenAI nano parse: ~$${COST.openaiParsePerRecord}/record`,
+      `Gemini 2.5 Flash-Lite parse: ~$${COST.openaiParsePerRecord}/record`,
       `Google search: $${COST.googleSearchPerQuery}/query`,
     ],
     disclaimer:
