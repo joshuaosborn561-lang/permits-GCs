@@ -25,8 +25,13 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   demoMode: bool('DEMO_MODE', false),
 
+  /**
+   * LLM via OpenAI SDK. Maps scraper uses Gemini through Google's OpenAI-compatible
+   * endpoint (`OPENAI_BASE_URL` + Gemini API key). Default model: Gemini 2.5 Flash-Lite.
+   */
   openaiApiKey: process.env.OPENAI_API_KEY ?? '',
-  openaiModel: process.env.OPENAI_MODEL ?? 'gpt-5-nano',
+  openaiBaseUrl: process.env.OPENAI_BASE_URL ?? '',
+  openaiModel: process.env.OPENAI_MODEL ?? 'gemini-2.5-flash-lite',
 
   apifyToken: process.env.APIFY_TOKEN ?? '',
 
@@ -64,7 +69,8 @@ export const config = {
 /** Per-unit cost estimates used for pre-run and live tracking (USD). */
 export const COST = {
   propwirePerRecord: 0.00155,
-  openaiParsePerRecord: 0.001,
+  /** Gemini 2.5 Flash-Lite structured extract — cheap high-volume tier. */
+  openaiParsePerRecord: 0.0002,
   /** Legacy per-record estimate; real PPE is start + result events (see below). */
   loopnetPerRecord: 0.0015,
   /** memo23/loopnet-scraper-ppe Actor Start (~$0.007/GB, min 1). */

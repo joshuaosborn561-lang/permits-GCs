@@ -6,7 +6,7 @@ Built for SalesGlider Growth outbound. Data lands in a dedicated Supabase schema
 
 ## What it does
 
-1. **Parse** free text → structured location params (OpenAI nano)
+1. **Parse** free text → structured location params (Gemini 2.5 Flash-Lite)
 2. **Propwire** pull (Apify `solidcode/propwire-com-scraper`) — commercial, full detail
 3. **c/o parse** — resolve PM from mailing address when present (high confidence; skips paid fallbacks)
 4. **LoopNet** fallback (Apify `memo23/loopnet-scraper-ppe`) — medium confidence
@@ -40,7 +40,7 @@ HTTP mirrors: `/api/shovels/contractors/summary`, `/api/shovels/contractors`, `/
 - Node.js + Express + TypeScript
 - React (Vite) single-page UI
 - Apify actors via `apify-client`
-- OpenAI structured JSON (`gpt-5-nano` by default — cheapest tier)
+- Gemini 2.5 Flash-Lite structured JSON via Google's OpenAI-compatible API (`OPENAI_BASE_URL`)
 - Supabase Postgres schema `property_pm_finder`
 - Railway (Dockerfile + nixpacks)
 
@@ -50,8 +50,9 @@ Copy `.env.example` → `.env` (or set in Railway):
 
 | Variable | Required | Notes |
 |----------|----------|-------|
-| `OPENAI_API_KEY` | for live AI | Nano-tier model |
-| `OPENAI_MODEL` | no | Default `gpt-5-nano` (cheapest) |
+| `OPENAI_API_KEY` | for live AI | Gemini API key (from maps scraper Railway) |
+| `OPENAI_BASE_URL` | no | Default empty; set to `https://generativelanguage.googleapis.com/v1beta/openai/` for Gemini |
+| `OPENAI_MODEL` | no | Default `gemini-2.5-flash-lite` |
 | `APIFY_TOKEN` | for live scrapes | [Apify Console → Integrations](https://console.apify.com/settings/integrations) |
 | `SUPABASE_URL` | for persistence | Same as google-maps-scraper service |
 | `SUPABASE_ANON_KEY` | for persistence | Same as google-maps-scraper service |
@@ -137,7 +138,7 @@ DEMO_MODE=true npm start
 | Step | Unit estimate |
 |------|----------------|
 | Propwire full detail | $0.00155 / record |
-| OpenAI nano parse | ~$0.001 / record |
+| Gemini 2.5 Flash-Lite parse | ~$0.0002 / record |
 | LoopNet | $0.0015 / record × fallout % |
 | Google PM search | $0.0025 / query (cap 5000) |
 | getleads | $0 |
