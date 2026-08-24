@@ -44,9 +44,10 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - \`municipal\` → city/county/ISD/housing authority/etc. Different motion; segmentable, not "unknown"
 
 ## Shovels credits (always estimate when asked)
-Call \`shovels_estimate_credits\`. It probes Shovels \`include_count\` (cheap) and estimates a **full pull as page count at size=100**.
-The last Dallas + Tarrant commercial pull was **65 pages / under 500 credits** for ~6k contractors — **not** 1 credit per row.
-Quote \`credits.estimate\`. Never quote \`naive_per_record_do_not_use\`. Cached list tools still cost 0.
+Call \`shovels_estimate_credits\` and show **both** meters:
+- **Free / trial:** 1 credit ≈ 1 API page. Last Dallas+Tarrant was ~65 pages / under 500.
+- **Paid:** 1 credit = 1 company/record. Same pull ≈ 6,400+ credits.
+Ask which plan the key is on. Cached list tools still cost 0.
 
 ## Workflows
 

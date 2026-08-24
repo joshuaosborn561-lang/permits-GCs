@@ -194,11 +194,12 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
   }
 
   const contractors = geos.reduce((n, g) => n + Number(g.total_count || 0), 0);
-  let credits = geos.reduce((n, g) => n + Number(g.estimated_credits || 0), 0);
+  let pages = geos.reduce((n, g) => n + Number(g.estimated_credits || 0), 0);
+  let companies = contractors;
   if (q.max_records && q.max_records > 0) {
-    credits = Math.min(credits, pagesFor(q.max_records, pageSize));
+    pages = Math.min(pages, pagesFor(q.max_records, pageSize));
+    companies = Math.min(companies, q.max_records);
   }
-  const naivePerRecord = q.max_records ? Math.min(contractors, q.max_records) : contractors;
 
   return {
     ok: true,
@@ -211,17 +212,24 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     window: { ...window, property_type: propertyType, page_size: pageSize },
     geos,
     contractors,
+    billing: {
+      free_trial:
+        'Historically 1 credit = 1 API request/page, regardless of how many companies are on the page. Free Online now also advertises 500 record-credits/mo and 10 results per query — confirm which meter your key is on.',
+      paid: '1 credit = 1 company/record returned. A size=100 page costs ~100 credits.',
+    },
     credits: {
       cached_query: 0,
-      estimate: credits,
-      unit: '1 credit ≈ 1 API page at size=100 (how the last DFW pull billed)',
-      naive_per_record_do_not_use: naivePerRecord,
+      free_tier_pages: pages,
+      paid_tier_companies: companies,
+      estimate: pages,
+      unit_free: '1 credit ≈ 1 API page (how the last DFW pull billed — under 500)',
+      unit_paid: '1 credit = 1 contractor record',
     },
     last_dfw_job: {
       requests_used: lastJob.requests_used_this_job ?? LAST_DFW_JOB.requests_used,
       unique_contractors: lastJob.unique_contractors ?? LAST_DFW_JOB.unique_contractors,
       pages: LAST_DFW_JOB.pages,
-      note: 'Dallas + Tarrant (Fort Worth) was 65 pages / well under 500 credits. Do not estimate 1 credit per contractor.',
+      note: 'Dallas + Tarrant was 65 pages / 6,471 rows. Under 500 only matches request/page billing (free/trial). Paid would have been ~6,471 company-credits.',
     },
     usage,
     cached_file_size: loadShovelsContractors().length,
@@ -233,10 +241,8 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
       city: q.city ?? null,
       state: q.state ?? null,
     },
-    explanation: live
-      ? `Live Shovels include_count probe: ~${contractors} commercial contractors across ${geos.length} geo(s). A full pull at ${pageSize}/page is ~${credits} credits (page count). Last DFW job used 67 requests for 6,124 contractors. Naive 1-credit-per-row would wrongly say ${naivePerRecord}.`
-      : `No live probe (${liveError || 'SHOVELS_API_KEY missing'}). Using the last commercial DFW job: Dallas 43 + Fort Worth/Tarrant 22 + Rockwall 1 = 67 requests for 6,124 contractors — Dallas+Tarrant under 500. Estimate for this filter: ~${credits} credits.`,
+    explanation: `Dallas+Tarrant-style pull: ~${pages} pages / ~${companies} companies. Free/trial (page meter): ~${pages} credits. Paid (company meter): ~${companies} credits. Last DFW job used 67 requests for 6,124 unique contractors and stayed under 500 — that is the free/page meter, not paid.`,
     assistant_instructions:
-      'Quote credits.estimate (page-based). Mention last Dallas+Tarrant pull was under 500 (65 pages). Do NOT quote naive_per_record_do_not_use. Cached list tools still cost 0. This estimate probe spends probe_credits_spent only when live.',
+      'Always show BOTH numbers: credits.free_tier_pages vs credits.paid_tier_companies. Ask which plan the key is on. Last Dallas+Tarrant under 500 = free/page billing. If they are on paid now, quote paid_tier_companies. Cached list tools still cost 0.',
   };
 }

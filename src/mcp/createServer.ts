@@ -346,8 +346,8 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
     {
       title: 'Estimate Shovels API credits',
       description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost.
-WHAT IT DOES: Calls Shovels include_count (1 cheap request per geo) and estimates a full pull as PAGE COUNT at size=100 — the way the last Dallas+Tarrant job billed (~65 pages, under 500 credits, NOT 1 credit per contractor). Default geos = Dallas city + Tarrant County.
-NEXT: Quote credits.estimate. Do not quote naive_per_record. Then save_calling_list if they want the cached file (0 more Shovels credits).`,
+WHAT IT DOES: Probes Shovels include_count and returns TWO estimates: free_tier_pages (1 credit/page — last Dallas+Tarrant was ~65 / under 500) and paid_tier_companies (1 credit per contractor). Default geos = Dallas + Tarrant.
+NEXT: Show both numbers. Ask if they are on free or paid. Cached save_calling_list still costs 0.`,
       inputSchema: {
         geos: z
           .string()
