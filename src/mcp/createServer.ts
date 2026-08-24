@@ -3,7 +3,11 @@ import { z } from 'zod';
 import { config } from '../server/config.js';
 import { hasSupabase, SCHEMA } from '../server/lib/supabase.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
-import { getOpenSosUsage, openSosEstimate, openSosLookup } from '../server/services/openSos.js';
+import {
+  listCallingLists,
+  queryCallingList,
+  saveCallingList,
+} from '../server/services/callingLists.js';
 import { buildOperators } from '../server/services/operators.js';
 import {
   loadParcels,
@@ -12,6 +16,7 @@ import {
   queryParcels,
   sampleParcels,
 } from '../server/services/parcels.js';
+import { estimateShovelsCredits } from '../server/services/shovelsCredits.js';
 import {
   contractorsToCsv,
   getShovelsContractor,
@@ -60,16 +65,14 @@ function healthPayload() {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
-    openSosConfigured: Boolean(config.openSosApiKey),
-    openSosMonthlyLimit: config.openSosMonthlyLimit,
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
-      'Shovels commercial GCs; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; OpenSOS for local LLC officers only after estimate + approval.',
+      'Shovels commercial GCs (including credit estimates); DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
     when_not_to_use:
-      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, bulk OpenSOS/SOSDirect LLC unmasking, bulk row dumps in chat.',
+      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, OpenSOS/SOSDirect (removed, legacy), bulk row dumps in chat.',
     how_to_use:
-      'Contractors: permits_contractors_summary → query/sample → sync_to_supabase. Parcels: parcels_summary → parcels_query → sync_to_supabase → build_operators → opensos_lookup for local_llc only after estimate + approval. Verify with select count(*). Confirm supabase_project before inspecting tables.',
+      'Shovels credits: shovels_estimate_credits (cached=0; live API=1 credit/record). Contractors: summary → estimate → query/sample → save_calling_list / sync_to_supabase. Cayden: list_calling_lists → query_calling_list (has_phone/city). Parcels: parcels_summary → parcels_query → sync_to_supabase → build_operators. Verify with select count(*).',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -82,7 +85,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs); (2) DCAD/TAD/CCAD commercial parcels with owner_type including municipal; (3) build_operators mailing-address rollup; (4) OpenSOS for local LLCs after estimate + approval. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, bulk paid SOS unmasking. Prefer sync_to_supabase / build_operators + select count(*).',
+        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) persist those pulls to Supabase calling lists; (3) filter saved lists for cold calling (Cayden etc.); (4) DCAD/TAD/CCAD commercial parcels; (5) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, OpenSOS (removed). Prefer save_calling_list / sync_to_supabase + select count(*).',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -92,7 +95,7 @@ export function createPermitParcelMcpServer(): McpServer {
     'permit-parcel://guide',
     {
       title: 'Permit & Parcel operator guide',
-      description: 'Full manual: Shovels GCs, parcels, OpenSOS, sync rules.',
+      description: 'Full manual: Shovels GCs, credit estimates, calling lists, parcels, sync rules.',
       mimeType: 'text/markdown',
     },
     async (uri) => ({
@@ -118,7 +121,7 @@ export function createPermitParcelMcpServer(): McpServer {
     {
       title: 'Health check',
       description:
-        'Readiness: Supabase, OpenSOS key, loaded contractor + parcel counts. Call first.',
+        'Readiness: Supabase, loaded contractor + parcel counts. Call first.',
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -261,7 +264,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
       title: 'Appraisal parcels — paginated query',
       description: `WHEN TO USE: Search commercial parcels (county, owner_name, city, zip, use_code, owner_type).
 WHAT IT DOES: Returns one page (max 50) + totals. Free. Local CAD extracts.
-NEXT: sync_to_supabase(dataset=parcels) for full matching set; opensos_lookup only for local_llc.`,
+NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
       inputSchema: {
         county: countyEnum,
         owner_name: z.string().optional(),
@@ -335,69 +338,130 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set; opensos_lookup on
     },
   );
 
-  // ---- OpenSOS (estimate → human approval → confirm_spend) ----
+  // ---- Shovels API credit estimate + calling lists ----
 
   server.registerTool(
-    'opensos_usage',
+    'shovels_estimate_credits',
     {
-      title: 'OpenSOS monthly usage (quota)',
-      description: `WHEN TO USE: Check how many OpenSOS live lookups remain this month (limit 1000).
-WHAT IT DOES: Returns used/remaining/limit for the current UTC month. Free. No API spend.`,
-      inputSchema: {},
-      annotations: { readOnlyHint: true, openWorldHint: false },
-    },
-    async () => jsonResult(await getOpenSosUsage()),
-  );
-
-  server.registerTool(
-    'opensos_estimate',
-    {
-      title: 'OpenSOS estimate (required before spend)',
-      description: `WHEN TO USE: Before ANY live OpenSOS lookup. Pass one or many entity names.
-WHAT IT DOES: Classifies cache vs live vs skip; returns estimated_live_requests, estimated_cost_usd, monthly remaining. Does NOT call OpenSOS API.
-NEXT: Show the estimate to the human. Wait for explicit approval ("approve opensos" / "confirm"). Only then opensos_lookup(..., confirm_spend=true).
-HARD RULE: Never run live OpenSOS without showing this estimate and getting approval.`,
+      title: 'Estimate Shovels API credits',
+      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost (Claude / "estimate credits" / "what would this cost on Shovels").
+WHAT IT DOES: Counts matching rows in the local DFW snapshot and returns two numbers: cached_query=0 credits, live_shovels_api=1 credit per record (paid Shovels rule). Does NOT call Shovels. Free.
+NEXT: Show both numbers. If they want the list, save_calling_list (writes Supabase, still 0 Shovels credits) then Cayden can query_calling_list.`,
       inputSchema: {
-        entity_names: z
-          .array(z.string().min(1))
+        q: z.string().optional(),
+        place: placeEnum,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+        max_records: z
+          .number()
+          .int()
           .min(1)
-          .max(200)
-          .describe('Entity names to estimate'),
-        state: z.string().optional().describe("Default 'TX'"),
-        force: z.boolean().optional().describe('Treat cache as miss'),
-        allow_non_llc: z.boolean().optional(),
+          .optional()
+          .describe('Cap the live-API credit estimate (1 credit per record)'),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (args) => jsonResult(await openSosEstimate(args)),
+    async (args) => jsonResult(estimateShovelsCredits(args)),
   );
 
   server.registerTool(
-    'opensos_lookup',
+    'save_calling_list',
     {
-      title: 'OpenSOS entity → officers (local LLC, spend-gated)',
-      description: `WHEN TO USE: After opensos_estimate + explicit human approval for live calls.
-WHAT IT DOES: Cache hit = free (no confirm needed). Live call requires confirm_spend=true, counts against 1000/month, ~$0.03, writes to Supabase.
-WHEN NOT TO USE: institutional (drop) or individual (owner is DM). Never batch-live without estimate + approval.
-HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
+      title: 'Save contractor pull to Supabase calling list',
+      description: `WHEN TO USE: Persist a filtered Shovels GC pull so Cayden (or another caller) can filter it later via MCP.
+WHAT IT DOES: Writes matching contractors to public.scrape_leads and catalogs the list in permit_parcel.calling_lists (owner + name). 0 Shovels credits (local file). Returns counts + list id only.
+NEXT: Tell the user the list id and owner. They filter with list_calling_lists / query_calling_list.`,
       inputSchema: {
-        entity_name: z.string().min(1),
-        state: z.string().optional().describe("Default 'TX'"),
-        force: z.boolean().optional().describe('Bypass Supabase cache'),
-        allow_non_llc: z
-          .boolean()
+        name: z.string().optional().describe('Human list name, e.g. "Cayden Fort Worth GCs with phone"'),
+        owner: z
+          .string()
           .optional()
-          .describe('Override local_llc gate (use sparingly)'),
-        confirm_spend: z
-          .boolean()
-          .optional()
-          .describe(
-            'Must be true for live OpenSOS HTTP calls, and only after opensos_estimate + explicit user approval',
-          ),
+          .describe('Who the list is for, e.g. "cayden". Used as the filter key later.'),
+        q: z.string().optional(),
+        place: placeEnum,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
       },
-      annotations: { readOnlyHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: false, openWorldHint: false },
     },
-    async (args) => jsonResult(await openSosLookup(args)),
+    async (args) => {
+      try {
+        return jsonResult(
+          await saveCallingList({
+            name: args.name,
+            owner: args.owner,
+            contractor_query: {
+              q: args.q,
+              place: args.place,
+              city: args.city,
+              state: args.state,
+              has_email: args.has_email,
+              has_phone: args.has_phone,
+              has_website: args.has_website,
+            },
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'save_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_calling_lists',
+    {
+      title: 'List saved cold-calling lists',
+      description: `WHEN TO USE: Cayden (or anyone) asks what calling lists exist, or needs a list_id.
+WHAT IT DOES: Reads permit_parcel.calling_lists from Supabase. Filter by owner (e.g. cayden). Counts only + metadata. Free.`,
+      inputSchema: {
+        owner: z.string().optional().describe('e.g. cayden'),
+        q: z.string().optional().describe('Search list name / owner / id'),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await listCallingLists(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'list_calling_lists failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'query_calling_list',
+    {
+      title: 'Filter a saved calling list (cold calling)',
+      description: `WHEN TO USE: Cayden wants dialable contacts from a saved list (has phone, city, name search).
+WHAT IT DOES: Pages rows from the Supabase-backed list (max 50/page). Free. Does not re-pull Shovels.
+RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into chat.`,
+      inputSchema: {
+        list_id: z.string().optional().describe('Calling list / scrape job id from save_calling_list'),
+        owner: z.string().optional().describe('e.g. cayden — all of that owner\'s lists'),
+        q: z.string().optional(),
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_phone: z.boolean().optional().describe('true = dialable rows only'),
+        has_email: z.boolean().optional(),
+        page: z.number().int().min(1).optional(),
+        page_size: z.number().int().min(1).max(50).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await queryCallingList(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'query_calling_list failed');
+      }
+    },
   );
 
   // ---- Operators (mailing-address rollup) ----
@@ -410,7 +474,7 @@ HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
 WHAT IT DOES: Groups local CAD parcels by mailing address (strips C/O/ATTN/%); excludes out-of-state, municipal, and tax-department addresses; writes permit_parcel.operators; returns COUNTS only.
 DEFAULTS: min_parcels=2, min_llcs=1, exclude_out_of_state/municipal/tax_departments=true, home_states=TX.
 PRIME FILTER: min_llcs=3, min_portfolio_value=5000000.
-DO NOT buy OpenSOS/SOSDirect for every LLC — resolve operators first; prefer free Texas Comptroller PIR later.`,
+Do not buy paid SOS unmasking for every LLC — resolve operators first; prefer free Texas Comptroller PIR later.`,
       inputSchema: {
         min_parcels: z.number().int().min(1).optional(),
         min_llcs: z.number().int().min(1).optional(),
@@ -453,6 +517,14 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
         owner_type: ownerTypeEnum.describe('Optional parcel owner_type filter'),
         place: placeEnum.describe('Optional Shovels place filter'),
         q: z.string().optional().describe('Optional text filter for the chosen dataset'),
+        list_name: z
+          .string()
+          .optional()
+          .describe('When syncing contractors, name the calling list (Cayden will see this)'),
+        owner: z
+          .string()
+          .optional()
+          .describe('When syncing contractors, who owns the calling list (e.g. cayden)'),
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
@@ -460,6 +532,8 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
       try {
         const result = await syncToSupabase({
           dataset: args.dataset,
+          list_name: args.list_name,
+          owner: args.owner,
           parcel_query: {
             county: args.county,
             owner_type: args.owner_type,
@@ -494,10 +568,38 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
             type: 'text',
             text: `Permit & Parcel MCP — Shovels contractors.
 Request: "${request || 'Summarize the contractor file'}"
-1) permits_contractors_summary
-2) query/sample as needed (paginate)
-3) sync_to_supabase(dataset=contractors) for bulk persistence
-4) verify with select count(*) — never dump all rows into chat.`,
+1) If they ask cost/credits: shovels_estimate_credits (cached=0; live Shovels API=1 credit/record)
+2) permits_contractors_summary / query/sample as needed (paginate)
+3) save_calling_list with owner (e.g. cayden) so the pull lands in Supabase
+4) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
+5) verify with select count(*) — never dump all rows into chat.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pp_filter_calling_list',
+    {
+      title: 'Filter a saved cold-calling list',
+      description: 'Use when Cayden (or another caller) wants to pull/filter a saved Shovels list.',
+      argsSchema: {
+        request: z.string().optional(),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Permit & Parcel MCP — saved calling lists.
+Request: "${request || 'Show Cayden calling lists with phone numbers'}"
+1) If they asked Shovels credit cost first, call shovels_estimate_credits
+2) list_calling_lists (owner=cayden if named)
+3) query_calling_list with has_phone=true (paginate ≤50)
+4) Never dump the full list into chat. Summarize counts and offer the next page.`,
           },
         },
       ],
@@ -507,8 +609,8 @@ Request: "${request || 'Summarize the contractor file'}"
   server.registerPrompt(
     'pp_query_parcels',
     {
-      title: 'Query appraisal parcels + optional OpenSOS',
-      description: 'DCAD/TAD/CCAD commercial parcels; OpenSOS for local_llc only.',
+      title: 'Query appraisal parcels',
+      description: 'DCAD/TAD/CCAD commercial parcels + operator rollup.',
       argsSchema: {
         request: z.string().optional(),
       },
@@ -523,7 +625,7 @@ Request: "${request || 'Summarize the contractor file'}"
 Request: "${request || 'Summarize commercial parcels'}"
 1) parcels_summary
 2) parcels_query with filters; note owner_type split
-3) Drop institutional. For local_llc: opensos_estimate → show live request count + $ + monthly remaining → WAIT for explicit approval → opensos_lookup(confirm_spend=true). Cap 1000/month.
+3) Drop institutional. For local_llc, do not offer OpenSOS (removed). Use build_operators + free Texas Comptroller PIR.
 4) sync_to_supabase(dataset=parcels) then select count(*)
 Propwire cascade is removed — do not offer it.`,
           },

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { estimateShovelsCredits } from '../services/shovelsCredits.js';
 import {
   contractorsToCsv,
   getShovelsContractor,
@@ -45,6 +46,16 @@ export const shovelsContractorsRouter = Router();
 /** Summary counts only — never full rows. */
 shovelsContractorsRouter.get('/summary', (_req, res) => {
   res.json(shovelsContractorsSummary());
+});
+
+/** Shovels API credit estimate (cached=0, live API=1/record). */
+shovelsContractorsRouter.get('/estimate-credits', (req, res) => {
+  res.json(
+    estimateShovelsCredits({
+      ...queryFromReq(req),
+      max_records: req.query.max_records ? Number(req.query.max_records) : undefined,
+    }),
+  );
 });
 
 /** Up to 20 random rows for quality inspection. */

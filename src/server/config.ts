@@ -19,11 +19,6 @@ export const config = {
   supabaseAnonKey: env('SUPABASE_ANON_KEY'),
   supabaseIngestSecret: env('SUPABASE_INGEST_SECRET'),
   supabaseServiceRoleKey: env('SUPABASE_SERVICE_ROLE_KEY'),
-  openSosApiKey: env('OPENSOSDATA_API_KEY'),
-  openSosBaseUrl: env('OPENSOSDATA_BASE_URL', 'https://api.opensosdata.com'),
-  /** Hard monthly cap on live OpenSOS lookups (default 1000). */
-  openSosMonthlyLimit: Math.max(0, Number(env('OPENSOS_MONTHLY_LIMIT', '1000')) || 1000),
-  openSosCostPerLookup: Number(env('OPENSOS_COST_PER_LOOKUP', '0.0314')) || 0.0314,
 };
 
 export type AppConfig = typeof config;

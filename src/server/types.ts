@@ -22,22 +22,3 @@ export interface ParcelRecord {
   owner_type: OwnerType;
 }
 
-export interface OpenSosOfficer {
-  name: string;
-  title: string | null;
-}
-
-export interface OpenSosResult {
-  entity_name: string;
-  state: string;
-  status: string | null;
-  entity_type: string | null;
-  formation_date: string | null;
-  registered_agent: string | null;
-  registered_agent_address: string | null;
-  officers: OpenSosOfficer[];
-  managing_members: string[];
-  cost: number;
-  cached: boolean;
-  raw?: Record<string, unknown>;
-}

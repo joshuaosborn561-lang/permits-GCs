@@ -7,8 +7,6 @@
         "SUPABASE_URL": "https://kemvxzhcxvynmoutwdrh.supabase.co",
         "SUPABASE_ANON_KEY": "",
         "SUPABASE_INGEST_SECRET": "",
-        "OPENSOSDATA_API_KEY": "",
-        "OPENSOS_MONTHLY_LIMIT": "1000",
         "DEMO_MODE": "false"
       }
     }
