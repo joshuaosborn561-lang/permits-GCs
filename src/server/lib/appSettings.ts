@@ -1,0 +1,188 @@
+import { config } from '../config.js';
+import { getSupabase, hasSupabase, ingestSecret } from './supabase.js';
+
+export const SETTING_KEYS = ['shovels_api_key', 'veriphone_api_key', 'texas_cpa_api_key'] as const;
+export type SettingKey = (typeof SETTING_KEYS)[number];
+export type KeySource = 'none' | 'env' | 'claude';
+
+type Slot = {
+  value: string;
+  source: KeySource;
+  updated_by: string | null;
+  updated_at: string | null;
+};
+
+const envFallback: Record<SettingKey, string> = {
+  shovels_api_key: config.shovelsApiKey,
+  veriphone_api_key: config.veriphoneApiKey,
+  texas_cpa_api_key: config.texasCpaApiKey,
+};
+
+const slots: Record<SettingKey, Slot> = {
+  shovels_api_key: emptySlot(envFallback.shovels_api_key),
+  veriphone_api_key: emptySlot(envFallback.veriphone_api_key),
+  texas_cpa_api_key: emptySlot(envFallback.texas_cpa_api_key),
+};
+
+let loadedFromStore = false;
+
+function emptySlot(envValue: string): Slot {
+  const value = envValue.trim();
+  return {
+    value,
+    source: value ? 'env' : 'none',
+    updated_by: null,
+    updated_at: null,
+  };
+}
+
+function isSettingKey(key: string): key is SettingKey {
+  return (SETTING_KEYS as readonly string[]).includes(key);
+}
+
+export function maskKey(key: string): string {
+  const t = key.trim();
+  if (!t) return '';
+  if (t.length <= 8) return '••••';
+  return `${t.slice(0, 4)}…${t.slice(-4)}`;
+}
+
+export async function loadAppSettings(): Promise<void> {
+  if (loadedFromStore) return;
+  loadedFromStore = true;
+  if (!hasSupabase()) {
+    for (const key of SETTING_KEYS) slots[key] = emptySlot(envFallback[key]);
+    return;
+  }
+  for (const key of SETTING_KEYS) {
+    try {
+      const { data, error } = await getSupabase().rpc('fetch_permit_parcel_setting', {
+        p_secret: ingestSecret(),
+        p_key: key,
+      });
+      if (error) {
+        console.warn(`[app settings] load ${key} failed`, error.message);
+        slots[key] = emptySlot(envFallback[key]);
+        continue;
+      }
+      const row = data as {
+        found?: boolean;
+        value?: string;
+        updated_by?: string;
+        updated_at?: string;
+      } | null;
+      if (row?.found && row.value) {
+        slots[key] = {
+          value: String(row.value).trim(),
+          source: 'claude',
+          updated_by: row.updated_by ?? null,
+          updated_at: row.updated_at ?? null,
+        };
+        continue;
+      }
+    } catch (err) {
+      console.warn(`[app settings] load ${key} failed`, err);
+    }
+    slots[key] = emptySlot(envFallback[key]);
+  }
+}
+
+export function getSetting(key: SettingKey): string {
+  return (slots[key].value || envFallback[key] || '').trim();
+}
+
+export function settingStatus(key: SettingKey) {
+  const value = getSetting(key);
+  const slot = slots[key];
+  return {
+    key,
+    configured: Boolean(value),
+    source: value ? slot.source : 'none',
+    masked: value ? maskKey(value) : null,
+    updated_by: slot.updated_by,
+    updated_at: slot.updated_at,
+    env_fallback: Boolean(envFallback[key]),
+    persist_available: hasSupabase(),
+  };
+}
+
+export async function getSettingStatus(key: SettingKey) {
+  await loadAppSettings();
+  return settingStatus(key);
+}
+
+export async function enrichmentKeysStatus() {
+  await loadAppSettings();
+  return {
+    ok: true,
+    shovels_api_key: settingStatus('shovels_api_key'),
+    veriphone_api_key: settingStatus('veriphone_api_key'),
+    texas_cpa_api_key: settingStatus('texas_cpa_api_key'),
+    assistant_instructions:
+      'Show only masked fingerprints. Never echo full keys. Cayden sets missing ones with set_enrichment_api_key.',
+  };
+}
+
+async function persistSetting(key: SettingKey, value: string, by: string): Promise<string | null> {
+  if (!hasSupabase()) return 'Supabase not configured — key is in memory only until restart';
+  const { error } = await getSupabase().rpc('upsert_permit_parcel_setting', {
+    p_secret: ingestSecret(),
+    p_key: key,
+    p_value: value,
+    p_updated_by: by,
+  });
+  return error ? error.message : null;
+}
+
+export async function setAppSetting(opts: {
+  key: string;
+  api_key: string;
+  set_by?: string;
+  persist?: boolean;
+}): Promise<Record<string, unknown>> {
+  await loadAppSettings();
+  if (!isSettingKey(opts.key)) {
+    return { ok: false, error: `Unknown setting. Use: ${SETTING_KEYS.join(', ')}` };
+  }
+  const value = opts.api_key.trim();
+  const by = (opts.set_by || 'cayden').trim().toLowerCase() || 'cayden';
+  if (value.length < 8) return { ok: false, error: 'API key looks too short' };
+  slots[opts.key] = {
+    value,
+    source: 'claude',
+    updated_by: by,
+    updated_at: new Date().toISOString(),
+  };
+  let persistError: string | null = null;
+  if (opts.persist !== false) persistError = await persistSetting(opts.key, value, by);
+  return {
+    ok: true,
+    ...settingStatus(opts.key),
+    persisted: opts.persist !== false && !persistError,
+    persist_error: persistError,
+    assistant_instructions:
+      'Key is set. Never repeat the full key. Show only the masked fingerprint.',
+  };
+}
+
+export async function clearAppSetting(opts: {
+  key: string;
+  set_by?: string;
+}): Promise<Record<string, unknown>> {
+  await loadAppSettings();
+  if (!isSettingKey(opts.key)) {
+    return { ok: false, error: `Unknown setting. Use: ${SETTING_KEYS.join(', ')}` };
+  }
+  const by = (opts.set_by || 'cayden').trim().toLowerCase() || 'cayden';
+  slots[opts.key] = {
+    ...emptySlot(envFallback[opts.key]),
+    updated_by: by,
+    updated_at: new Date().toISOString(),
+  };
+  if (hasSupabase()) await persistSetting(opts.key, '', by);
+  return {
+    ok: true,
+    ...settingStatus(opts.key),
+    note: envFallback[opts.key] ? 'Reverted to env fallback' : 'No key configured',
+  };
+}

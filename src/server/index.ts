@@ -6,11 +6,13 @@ import { mountMcpHttp } from '../mcp/http.js';
 import { config } from './config.js';
 import { hasSupabase, SCHEMA } from './lib/supabase.js';
 import { supabaseTargetMeta } from './lib/supabaseTarget.js';
-import { openSosRouter } from './routes/openSos.js';
+import { enrichmentKeysStatus, loadAppSettings } from './lib/appSettings.js';
+import { getShovelsKeyStatus } from './lib/shovelsKey.js';
+import { callingListsRouter } from './routes/callingLists.js';
 import { parcelsRouter } from './routes/parcels.js';
+import { shovelsApiKeyRouter } from './routes/shovelsApiKey.js';
 import { shovelsContractorsRouter } from './routes/shovelsContractors.js';
 import { buildOperators } from './services/operators.js';
-import { getOpenSosUsage } from './services/openSos.js';
 import { loadParcels, parcelsSummary } from './services/parcels.js';
 import { loadShovelsContractors } from './services/shovelsContractors.js';
 import { syncToSupabase } from './services/syncToSupabase.js';
@@ -24,6 +26,7 @@ app.use(express.json({ limit: '4mb' }));
 
 app.get('/api/health', async (_req, res) => {
   const target = supabaseTargetMeta();
+  const shovelsKey = await getShovelsKeyStatus();
   res.json({
     ok: true,
     product: 'Permit & Parcel MCP',
@@ -32,9 +35,9 @@ app.get('/api/health', async (_req, res) => {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
-    openSosConfigured: Boolean(config.openSosApiKey),
-    openSosMonthlyLimit: config.openSosMonthlyLimit,
-    openSosUsage: await getOpenSosUsage(),
+    shovelsApiConfigured: shovelsKey.configured,
+    shovels_api_key: shovelsKey,
+    enrichment_keys: await enrichmentKeysStatus(),
     shovelsContractorsLoaded: loadShovelsContractors().length,
     parcelsLoaded: loadParcels().length,
     parcels: parcelsSummary(),
@@ -48,7 +51,8 @@ app.get('/api/health', async (_req, res) => {
 
 app.use('/api/parcels', parcelsRouter);
 app.use('/api/shovels/contractors', shovelsContractorsRouter);
-app.use('/api/opensos', openSosRouter);
+app.use('/api/shovels/api-key', shovelsApiKeyRouter);
+app.use('/api/calling-lists', callingListsRouter);
 
 app.post('/api/sync-to-supabase', async (req, res) => {
   try {
@@ -64,6 +68,8 @@ app.post('/api/sync-to-supabase', async (req, res) => {
         place: req.body?.place,
         q: req.body?.q,
       },
+      list_name: req.body?.list_name,
+      owner: req.body?.owner,
     });
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
@@ -119,11 +125,18 @@ app.use((req, res, next) => {
 });
 
 app.listen(config.port, () => {
+  void loadAppSettings().then(() =>
+    enrichmentKeysStatus().then((keys) => {
+      console.log(
+        `Keys: shovels=${keys.shovels_api_key.configured ? keys.shovels_api_key.masked : 'unset'} veriphone=${keys.veriphone_api_key.configured ? keys.veriphone_api_key.masked : 'unset'} cpa=${keys.texas_cpa_api_key.configured ? keys.texas_cpa_api_key.masked : 'unset'}`,
+      );
+    }),
+  );
   const contractors = loadShovelsContractors();
   const parcels = loadParcels();
   console.log(`Permit & Parcel MCP listening on :${config.port}`);
   console.log(`MCP streamable HTTP: /mcp  |  stdio: node dist/mcp/stdio.js`);
   console.log(
-    `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | OpenSOS: ${config.openSosApiKey ? 'yes' : 'no'} | Contractors: ${contractors.length} | Parcels: ${parcels.length}`,
+    `Mode: ${config.demoMode ? 'DEMO' : 'LIVE'} | Supabase: ${hasSupabase() ? 'yes' : 'no'} | Contractors: ${contractors.length} | Parcels: ${parcels.length}`,
   );
 });

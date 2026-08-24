@@ -306,6 +306,6 @@ export async function buildOperators(
       `select count(*) from ${filters.target_schema}.${filters.target_table} where distinct_llcs >= 3 and portfolio_value >= 5000000;`,
     ],
     assistant_instructions:
-      'Operator rollup wrote counts only. Verify with verify_sql — do not select * into chat. Prefer these operators over per-LLC OpenSOS; do not buy bulk SOS lookups.',
+      'Operator rollup wrote counts only. Verify with verify_sql — do not select * into chat. Prefer these operators over per-LLC paid SOS lookups.',
   };
 }

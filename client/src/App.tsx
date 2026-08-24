@@ -5,7 +5,6 @@ type Health = {
   product?: string;
   demoMode?: boolean;
   supabaseConfigured?: boolean;
-  openSosConfigured?: boolean;
   shovelsContractorsLoaded?: number;
   parcelsLoaded?: number;
   parcels?: {
@@ -31,8 +30,8 @@ export default function App() {
         <p className="eyebrow">SalesGlider</p>
         <h1>Permit &amp; Parcel</h1>
         <p className="lede">
-          Shovels commercial GCs · DCAD / TAD / CCAD parcels · OpenSOS for local LLCs.
-          Propwire cascade removed.
+          Shovels commercial GCs · credit estimates · Supabase calling lists · DCAD / TAD / CCAD
+          parcels. Propwire cascade removed.
         </p>
       </header>
 
@@ -45,7 +44,6 @@ export default function App() {
             <li>Contractors: {health.shovelsContractorsLoaded ?? 0}</li>
             <li>Parcels: {health.parcelsLoaded ?? 0}</li>
             <li>Supabase: {health.supabaseConfigured ? 'yes' : 'no'}</li>
-            <li>OpenSOS: {health.openSosConfigured ? 'yes' : 'no'}</li>
             <li>Demo: {health.demoMode ? 'on' : 'off'}</li>
           </ul>
           {health.parcels?.counties && (
@@ -78,8 +76,10 @@ export default function App() {
       <section className="mcp">
         <h2>MCP</h2>
         <p>
-          Connect Claude to <code>/mcp</code> (authless). Prefer{' '}
-          <code>sync_to_supabase</code> + <code>select count(*)</code> over row dumps.
+          Connect Claude to <code>/mcp</code> (authless). Cayden can set API keys in
+          chat, score a list, match Texas officers, check cell vs landline, then dial{' '}
+          <code>owner_cell</code> rows. Prefer <code>select count(*)</code> over row
+          dumps. Never echo full API keys.
         </p>
       </section>
     </div>

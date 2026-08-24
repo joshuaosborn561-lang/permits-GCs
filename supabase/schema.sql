@@ -1,5 +1,5 @@
 -- Permit & Parcel MCP (repo: joshuaosborn561-lang/permits-GCs)
--- Active schema for parcels + OpenSOS. Applied to google-maps-scraper-leads.
+-- Active schema for parcels + calling lists. Applied to google-maps-scraper-leads.
 -- See also supabase/migrations/ for incremental RPCs.
 --
 -- Legacy note: property_pm_finder.* remains in the database from the removed
@@ -26,28 +26,13 @@ CREATE TABLE IF NOT EXISTS permit_parcel.parcels (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS permit_parcel.opensos_lookups (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  entity_name text NOT NULL,
-  state text NOT NULL DEFAULT 'TX',
-  status text,
-  entity_type text,
-  formation_date text,
-  registered_agent text,
-  registered_agent_address text,
-  officers jsonb NOT NULL DEFAULT '[]'::jsonb,
-  managing_members jsonb NOT NULL DEFAULT '[]'::jsonb,
-  cost numeric NOT NULL DEFAULT 0,
-  raw jsonb NOT NULL DEFAULT '{}'::jsonb,
-  looked_up_at timestamptz NOT NULL DEFAULT now(),
-  UNIQUE (entity_name, state)
-);
-
-CREATE TABLE IF NOT EXISTS permit_parcel.opensos_usage (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  ym text NOT NULL,
-  entity_name text NOT NULL,
-  state text NOT NULL DEFAULT 'TX',
-  cost numeric NOT NULL DEFAULT 0,
-  created_at timestamptz NOT NULL DEFAULT now()
+CREATE TABLE IF NOT EXISTS permit_parcel.calling_lists (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  owner text NOT NULL DEFAULT 'shared',
+  source text NOT NULL DEFAULT 'shovels_contractors',
+  filters jsonb NOT NULL DEFAULT '{}'::jsonb,
+  row_count integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );

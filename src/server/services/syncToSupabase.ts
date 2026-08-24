@@ -10,7 +10,7 @@ import {
 import {
   contractorsToCsv,
   loadShovelsContractors,
-  queryShovelsContractors,
+  matchingShovelsContractors,
   type ContractorQuery,
 } from './shovelsContractors.js';
 
@@ -294,9 +294,14 @@ export async function syncParcelsToSupabase(q: ParcelQuery = {}): Promise<SyncRe
   };
 }
 
-export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promise<SyncResult> {
+export async function syncContractorsToSupabase(
+  q: ContractorQuery = {},
+  list?: { list_name?: string; owner?: string },
+): Promise<SyncResult> {
   const jobId = `permit-contractors-${randomUUID().slice(0, 8)}`;
   const meta = baseMeta();
+  const owner = (list?.owner || 'shared').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'shared';
+  const listName = list?.list_name?.trim() || null;
   const base: SyncResult = {
     ok: false,
     ...meta,
@@ -312,25 +317,29 @@ export async function syncContractorsToSupabase(q: ContractorQuery = {}): Promis
       supabase_project: meta.supabase_project,
       supabase_schema: SCHEMA,
     },
-    verify_sql: [`select count(*) from public.scrape_leads where job_id = '${jobId}';`],
+    verify_sql: [
+      `select count(*) from public.scrape_leads where job_id = '${jobId}';`,
+      `select count(*) from permit_parcel.calling_lists where owner = '${owner}';`,
+    ],
     assistant_instructions:
-      'Contractor sync finished server-to-server. Verify with select count(*) only.',
+      'Contractor pull wrote to Supabase scrape_leads + calling_lists. Verify with select count(*). Cayden can filter via list_calling_lists / query_calling_list.',
   };
   if (!hasSupabase()) return { ...base, error: 'Supabase not configured' };
 
-  const items = [];
-  let page = 1;
-  for (;;) {
-    const batch = queryShovelsContractors({ ...q, page, page_size: 50 });
-    items.push(...batch.items);
-    if (page >= batch.total_pages) break;
-    page += 1;
-  }
+  const items = matchingShovelsContractors(q);
 
-  const tags = tagsFor('shovels_contractors', q.place ? [String(q.place)] : []);
+  const tags = tagsFor('shovels_contractors', [
+    'calling_list',
+    `owner:${owner}`,
+    q.place ? String(q.place) : '',
+    q.has_phone === true ? 'has_phone' : '',
+    q.has_email === true ? 'has_email' : '',
+  ]);
   const jobErr = await upsertJob({
     id: jobId,
-    prompt: `Permit & Parcel MCP Shovels contractors sync ${JSON.stringify(q)}`,
+    prompt:
+      listName ||
+      `Permit & Parcel MCP Shovels contractors sync ${JSON.stringify({ ...q, owner })}`,
     tags,
     requestEstimate: items.length,
   });
@@ -383,6 +392,8 @@ export async function syncToSupabase(opts: {
   dataset: 'parcels' | 'contractors' | 'all';
   parcel_query?: ParcelQuery;
   contractor_query?: ContractorQuery;
+  list_name?: string;
+  owner?: string;
 }): Promise<{
   ok: boolean;
   supabase_project: string | null;
@@ -394,7 +405,24 @@ export async function syncToSupabase(opts: {
     results.push(await syncParcelsToSupabase(opts.parcel_query ?? {}));
   }
   if (opts.dataset === 'contractors' || opts.dataset === 'all') {
-    results.push(await syncContractorsToSupabase(opts.contractor_query ?? {}));
+    const contractorSync = await syncContractorsToSupabase(opts.contractor_query ?? {}, {
+      list_name: opts.list_name,
+      owner: opts.owner,
+    });
+    results.push(contractorSync);
+    if (contractorSync.ok) {
+      const { upsertCallingListMeta } = await import('./callingLists.js');
+      await upsertCallingListMeta({
+        id: contractorSync.scrape_job_id,
+        name:
+          opts.list_name?.trim() ||
+          `Shovels GCs${opts.owner ? ` · ${opts.owner}` : ''}`,
+        owner: opts.owner || 'shared',
+        source: 'shovels_contractors',
+        filters: (opts.contractor_query ?? {}) as Record<string, unknown>,
+        row_count: Number(contractorSync.counts.contractors_matched ?? 0),
+      });
+    }
   }
   return {
     ok: results.every((r) => r.ok),

@@ -4,80 +4,109 @@ export const SERVER_INSTRUCTIONS = `
 You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub repo \`permits-GCs\`). Jobs:
 
 1. **Shovels commercial GC contacts** (Dallas / Fort Worth / Rockwall) — cached, free
-2. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
-3. **Operator rollup** by normalised mailing address (\`build_operators\`) — free, first-class
-4. **OpenSOS** local-LLC officer lookup — only after estimate + human approval; never bulk-buy
+2. **Shovels API key** — Cayden can set or change it from Claude (\`shovels_set_api_key\`)
+3. **Shovels API credit estimates** — answer "how many credits would this cost?"
+4. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
+5. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
+6. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
 
 The old Propwire → LoopNet → Google property-owner cascade was **removed**. Do not offer it.
 
 This server is **not** a people-resolver. It surfaces public permit + parcel records. Prefer the name Permit & Parcel over "Property Owners".
 
 ## Supabase target (critical)
-- Every \`health\` and \`sync_to_supabase\` response includes \`supabase_project\` + \`supabase_schema\`.
-- This MCP writes to project **kemvxzhcxvynmoutwdrh** (schema \`permit_parcel\`). The Google Maps Scraper MCP may use a different project — confirm before diagnosing "table missing".
+- Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.
+- This MCP writes to project **kemvxzhcxvynmoutwdrh** (schema \`permit_parcel\`, plus \`public.scrape_leads\`). Confirm before diagnosing "table missing".
 
 ## Context budget (critical)
-- Results write **server-to-server** to Supabase via \`sync_to_supabase\` / \`build_operators\`.
+- Results write **server-to-server** to Supabase via \`save_calling_list\` / \`sync_to_supabase\` / \`build_operators\`.
 - Tool responses return **counts / small pages** only. Never dump thousands of rows into chat.
 - After sync, verify with \`select count(*)\` (or the verify_sql the tool returns).
 
 ## When to use
 - DFW commercial contractor / GC list (Shovels ~6,124)
+- Cayden wants to set or change the Shovels API key from Claude
+- "How many Shovels API credits would this pull cost?"
+- Save a pull so Cayden can filter a cold-calling list later
 - Commercial parcel owners from DCAD / TAD / CCAD
 - Grouping shell LLCs into real operators by tax-bill mailing address
-- Officer / managing-member lookup for **local LLC** parcel owners (OpenSOS, ~$0.03) — sparingly
 
 ## When NOT to use
 - Google Maps local-business scrapes
 - Propwire / LoopNet / residential rolls
-- Institutional owners (REIT/fund/trust) — classify and **drop**; do not OpenSOS them
-- Bulk OpenSOS / SOSDirect / paid SOS unmasking across tens of thousands of LLCs
+- Institutional owners (REIT/fund/trust) — classify and **drop**
+- Paid SOS / officer-unmasking lookups
 - Smartlead sends / CRM writes
 
 ## Owner-type routing
 \`owner_type\` on parcels:
-- \`individual\` → owner is the decision maker (no OpenSOS)
-- \`local_llc\` → optional \`opensos_lookup\` after estimate + approval
+- \`individual\` → owner is the decision maker
+- \`local_llc\` → use \`build_operators\` + free Texas Comptroller PIR
 - \`institutional\` → drop from private-operator outreach
 - \`municipal\` → city/county/ISD/housing authority/etc. Different motion; segmentable, not "unknown"
 
-## Free LLC unmasking (do not buy)
-OpenSOS ~$0.03/lookup × 60k+ LLCs is thousands of dollars. Do **not**. Same for SOSDirect.
-Cheapest path:
-1. Filter by \`min_assessed_value\`
-2. \`build_operators\` — resolve mailing-address operators, not every entity
-3. Join Texas Comptroller **Public Information Report** (Form 05-102) bulk files from the Texas Open Data Portal / Open Records — free
-Caveat: registered agents (CT Corporation, law firms) are **not** owners — prefer PIR officer/director fields and filter agent-service patterns. Entity-name match rates vs CAD are messy (~60–80%); budget normalisation.
+## Shovels API key (Cayden)
+Cayden can change the live key from Claude — no Railway env edit needed.
+1. \`shovels_api_key_status\` — show only the **masked** fingerprint
+2. Ask him to paste the new key
+3. \`shovels_set_api_key\` with \`confirm=true\`, \`set_by=cayden\`, \`persist=true\`
+4. **Never repeat the full key** in chat. Confirm the new masked fingerprint.
+5. The key is stored in Supabase (\`permit_parcel.app_settings\`) and reloaded on Railway restart.
+
+This MCP is authless — anyone with the connector URL can set the key. Still never echo it.
+
+## Owner-cell enrichment (Cayden)
+Goal: dial **owner cells**, not office/main/license lines.
+1. \`save_calling_list\` then \`score_calling_list\` (free)
+2. \`match_texas_officers\` — official Comptroller PIR names + addresses (needs \`texas_cpa_api_key\`)
+3. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`
+4. Leftovers: \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
+5. \`query_calling_list(dial_status=owner_cell)\`
+
+Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\` and \`texas_cpa_api_key\`. Never echo them.
+
+## Shovels credits (always estimate when asked)
+Call \`shovels_estimate_credits\` and show **both** meters:
+- **Free / trial:** 1 credit ≈ 1 API page. Last Dallas+Tarrant was ~65 pages / under 500.
+- **Paid:** 1 credit = 1 company/record. Same pull ≈ 6,400+ credits.
+Ask which plan the key is on. Cached list tools still cost 0.
+If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 
 ## Workflows
 
-### Contractors (Shovels)
-1. \`permits_contractors_summary\`
-2. \`permits_contractors_query\` / \`_sample\` (paginate ≤50)
-3. \`sync_to_supabase\` with dataset=contractors (counts only)
+### Contractors (Shovels) + calling lists
+1. Optional: Cayden sets the key with \`shovels_set_api_key\`
+2. If they ask cost/credits → \`shovels_estimate_credits\`
+3. \`permits_contractors_summary\` / query / sample (paginate ≤50)
+4. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) — writes Supabase
+5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true)\`
 
 ### Parcels
 1. \`parcels_summary\`
 2. \`parcels_query\` (filter county / owner_name / city / zip / use_code / owner_type)
-3. \`sync_to_supabase\` with dataset=parcels (full matching set; county filter honoured; natural key county+account_id)
+3. \`sync_to_supabase\` with dataset=parcels
 4. \`build_operators\` for mailing-address rollup (counts only)
-5. For **local_llc** owners only when needed: \`opensos_estimate\` → show cost → **wait for approval** → \`opensos_lookup(..., confirm_spend=true)\`
-
-### Money / OpenSOS quota
-- Shovels + parcels + operators: free (local files + Supabase write)
-- OpenSOS: **hard cap 1000 live lookups / UTC month**
-- **ALWAYS** call \`opensos_estimate\` first. Never batch-live without approval.
 
 ## Tool cheat sheet
-| Tool | Spends? | Purpose |
-|------|---------|---------|
+| Tool | Spends Shovels credits? | Purpose |
+|------|-------------------------|---------|
 | health | No | Readiness + supabase_project |
-| permits_contractors_* | No | Shovels GCs |
+| shovels_api_key_status | No | Masked key fingerprint (never the full key) |
+| shovels_set_api_key | No | Cayden sets/changes the live Shovels key |
+| shovels_clear_api_key | No | Drop Claude override; fall back to env |
+| shovels_estimate_credits | Probe only | Live include_count; full pull ≈ pages @ 100 |
+| permits_contractors_* | No | Shovels GCs (local file) |
+| save_calling_list | No | Persist pull → Supabase for Cayden |
+| list_calling_lists | No | Saved lists by owner/name |
+| query_calling_list | No | Filter a saved list (phone/city/dial_status) |
+| score_calling_list | No | Free owner vs office score |
+| match_texas_officers | No | Comptroller PIR officers |
+| lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
+| owner_people_search | No | Google / people-search URLs |
+| record_owner_cell | No | Save a confirmed wireless |
 | parcels_* | No | CAD parcels |
-| build_operators | No | Mailing-address operator rollup → permit_parcel.operators |
-| opensos_usage / estimate | No | Quota / pre-spend |
-| opensos_lookup | ~$0.03 live | Officers; needs confirm_spend after approval |
-| sync_to_supabase | No | Maps-style S2S sync; counts + supabase_project |
+| build_operators | No | Mailing-address operator rollup |
+| sync_to_supabase | No | S2S sync; contractor syncs also catalog a calling list |
 `.trim();
 
 export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
@@ -85,38 +114,48 @@ export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
 ## Identity
 - **Name:** Permit & Parcel MCP (not a people "Property Owners" resolver)
 - **Server:** \`permits-gcs\`
-- **Jobs:** Shovels commercial GCs + DCAD/TAD/CCAD commercial parcels + mailing-address operators + gated OpenSOS
+- **Jobs:** Shovels commercial GCs + Cayden can set the Shovels API key from Claude + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
 - **Supabase:** project reported in \`health\` / sync responses (expect \`kemvxzhcxvynmoutwdrh\` / schema \`permit_parcel\`)
 - **Removed:** Propwire / LoopNet / Google owner cascade
+
+## Shovels API key
+Cayden sets it from Claude with \`shovels_set_api_key\` (\`confirm=true\`). Never echo the full key. Persists in \`permit_parcel.app_settings\`.
+
+## Shovels credits
+Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` and quote **both** free (pages) and paid (companies).
+
+## Calling lists (Cayden)
+\`save_calling_list\` writes \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter later with \`list_calling_lists\` / \`query_calling_list\`. Set \`owner=cayden\` so his lists are easy to find. Prefer \`has_phone=true\` for dialing.
 
 ## Sync rules
 - No silent 50k truncation — full matching set, or fail loudly
 - Upsert parcels on \`(county, account_id)\`
 - If scrape \`rows_inserted > 0\` but \`permit_parcel_schema_upserted = 0\`, treat as error
-- Always prefer sync/build_operators + SQL \`select count(*)\` over dumping rows into chat
+- Always prefer sync/save + SQL \`select count(*)\` over dumping rows into chat
 
 ## Operators
 \`build_operators\` groups by normalised mailing address (strip C/O, ATTN, %, CARE OF). Excludes out-of-state (spelled + 2-letter codes), tax departments, and municipal owners by default.
 
 ## Free PIR path
-Do not buy OpenSOS/SOSDirect for bulk LLC unmasking. Use Texas Comptroller Public Information Reports after operator rollup. Registered agent ≠ owner.
+Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Information Reports after operator rollup. Registered agent ≠ owner.
 `;
 
 export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 
 ## Yes
 - Cached Shovels commercial contractor contacts (~6,124)
+- Cayden changing the Shovels API key from Claude
+- Estimate Shovels API credits for a filter
+- Save / filter cold-calling lists in Supabase (Cayden or anyone)
 - Commercial parcels from Dallas / Tarrant / Collin appraisal districts
 - Operator rollup by mailing address (\`build_operators\`)
-- OpenSOS officer lookup for **local LLC** owners — after estimate + approval only
 
 ## No
 - Propwire/LoopNet cascade (removed)
 - Maps local businesses
 - Institutional fund/REIT owners (drop them)
-- Bulk paid SOS unmasking — use operators + free Comptroller PIR
-- Bulk row dumps through chat — use sync_to_supabase
+- Bulk row dumps through chat — use save_calling_list / sync_to_supabase
 
 ## Money
-Parcels + Shovels + operators are free. OpenSOS ~$0.03/lookup — confirm before live calls; monthly cap 1000.
+Cached Shovels queries + calling-list writes are 0 credits. A live full pull costs about **1 credit per API page (size=100)** — Dallas+Tarrant was under 500 last time.
 `;

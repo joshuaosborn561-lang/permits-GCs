@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { estimateShovelsCredits } from '../services/shovelsCredits.js';
 import {
   contractorsToCsv,
   getShovelsContractor,
@@ -45,6 +46,26 @@ export const shovelsContractorsRouter = Router();
 /** Summary counts only — never full rows. */
 shovelsContractorsRouter.get('/summary', (_req, res) => {
   res.json(shovelsContractorsSummary());
+});
+
+/** Live Shovels include_count credit estimate (page-based). */
+shovelsContractorsRouter.get('/estimate-credits', async (req, res) => {
+  try {
+    res.json(
+      await estimateShovelsCredits({
+        ...queryFromReq(req),
+        geos: typeof req.query.geos === 'string' ? req.query.geos : undefined,
+        date_from: typeof req.query.date_from === 'string' ? req.query.date_from : undefined,
+        date_to: typeof req.query.date_to === 'string' ? req.query.date_to : undefined,
+        property_type:
+          typeof req.query.property_type === 'string' ? req.query.property_type : undefined,
+        page_size: req.query.page_size ? Number(req.query.page_size) : undefined,
+        max_records: req.query.max_records ? Number(req.query.max_records) : undefined,
+      }),
+    );
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'estimate failed' });
+  }
 });
 
 /** Up to 20 random rows for quality inspection. */

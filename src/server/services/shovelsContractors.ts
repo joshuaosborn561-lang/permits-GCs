@@ -250,9 +250,16 @@ function matches(c: ShovelsContractor, q: ContractorQuery): boolean {
   return true;
 }
 
+export function matchingShovelsContractors(q: ContractorQuery = {}): ShovelsContractor[] {
+  return loadShovelsContractors().filter((c) => matches(c, q));
+}
+
+export function countMatchingShovelsContractors(q: ContractorQuery = {}): number {
+  return matchingShovelsContractors(q).length;
+}
+
 export function queryShovelsContractors(q: ContractorQuery = {}): ContractorQueryResult {
-  const all = loadShovelsContractors();
-  const filtered = all.filter((c) => matches(c, q));
+  const filtered = matchingShovelsContractors(q);
   const pageSize = Math.min(50, Math.max(1, q.page_size ?? 25));
   const page = Math.max(1, q.page ?? 1);
   const total = filtered.length;

@@ -1,9 +1,30 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { config } from '../server/config.js';
+import {
+  clearAppSetting,
+  enrichmentKeysStatus,
+  setAppSetting,
+} from '../server/lib/appSettings.js';
+import {
+  clearShovelsApiKey,
+  getShovelsKeyStatus,
+  setShovelsApiKey,
+} from '../server/lib/shovelsKey.js';
 import { hasSupabase, SCHEMA } from '../server/lib/supabase.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
-import { getOpenSosUsage, openSosEstimate, openSosLookup } from '../server/services/openSos.js';
+import {
+  listCallingLists,
+  queryCallingList,
+  saveCallingList,
+} from '../server/services/callingLists.js';
+import {
+  lookupLineTypes,
+  matchTexasOfficers,
+  ownerPeopleSearch,
+  recordOwnerCell,
+  scoreCallingList,
+} from '../server/services/enrichCallingList.js';
 import { buildOperators } from '../server/services/operators.js';
 import {
   loadParcels,
@@ -12,6 +33,7 @@ import {
   queryParcels,
   sampleParcels,
 } from '../server/services/parcels.js';
+import { estimateShovelsCredits } from '../server/services/shovelsCredits.js';
 import {
   contractorsToCsv,
   getShovelsContractor,
@@ -50,8 +72,9 @@ const ownerTypeEnum = z
   .enum(['individual', 'local_llc', 'institutional', 'municipal', 'unknown'])
   .optional();
 
-function healthPayload() {
+async function healthPayload() {
   const target = supabaseTargetMeta();
+  const shovelsKey = await getShovelsKeyStatus();
   return {
     ok: true,
     product: 'Permit & Parcel MCP',
@@ -60,16 +83,16 @@ function healthPayload() {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
-    openSosConfigured: Boolean(config.openSosApiKey),
-    openSosMonthlyLimit: config.openSosMonthlyLimit,
+    shovels_api_configured: shovelsKey.configured,
+    shovels_api_key: shovelsKey,
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
-      'Shovels commercial GCs; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; OpenSOS for local LLC officers only after estimate + approval.',
+      'Shovels commercial GCs (including credit estimates); change the Shovels API key from Claude; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
     when_not_to_use:
-      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, bulk OpenSOS/SOSDirect LLC unmasking, bulk row dumps in chat.',
+      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Contractors: permits_contractors_summary → query/sample → sync_to_supabase. Parcels: parcels_summary → parcels_query → sync_to_supabase → build_operators → opensos_lookup for local_llc only after estimate + approval. Verify with select count(*). Confirm supabase_project before inspecting tables.',
+      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score → match_texas_officers → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Credits: shovels_estimate_credits. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -82,7 +105,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs); (2) DCAD/TAD/CCAD commercial parcels with owner_type including municipal; (3) build_operators mailing-address rollup; (4) OpenSOS for local LLCs after estimate + approval. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, bulk paid SOS unmasking. Prefer sync_to_supabase / build_operators + select count(*).',
+        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) Cayden can set/change the Shovels API key from Claude; (3) persist those pulls to Supabase calling lists; (4) filter saved lists for cold calling; (5) DCAD/TAD/CCAD commercial parcels; (6) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS unmasking. Prefer save_calling_list / sync_to_supabase + select count(*). Never echo a full API key.',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -92,7 +115,7 @@ export function createPermitParcelMcpServer(): McpServer {
     'permit-parcel://guide',
     {
       title: 'Permit & Parcel operator guide',
-      description: 'Full manual: Shovels GCs, parcels, OpenSOS, sync rules.',
+      description: 'Full manual: Shovels GCs, credit estimates, calling lists, parcels, sync rules.',
       mimeType: 'text/markdown',
     },
     async (uri) => ({
@@ -118,11 +141,11 @@ export function createPermitParcelMcpServer(): McpServer {
     {
       title: 'Health check',
       description:
-        'Readiness: Supabase, OpenSOS key, loaded contractor + parcel counts. Call first.',
+        'Readiness: Supabase, loaded contractor + parcel counts. Call first.',
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async () => jsonResult(healthPayload()),
+    async () => jsonResult(await healthPayload()),
   );
 
   // ---- Shovels / permits contractors (behavior unchanged; prefix renamed) ----
@@ -261,7 +284,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
       title: 'Appraisal parcels — paginated query',
       description: `WHEN TO USE: Search commercial parcels (county, owner_name, city, zip, use_code, owner_type).
 WHAT IT DOES: Returns one page (max 50) + totals. Free. Local CAD extracts.
-NEXT: sync_to_supabase(dataset=parcels) for full matching set; opensos_lookup only for local_llc.`,
+NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
       inputSchema: {
         county: countyEnum,
         owner_name: z.string().optional(),
@@ -335,69 +358,397 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set; opensos_lookup on
     },
   );
 
-  // ---- OpenSOS (estimate → human approval → confirm_spend) ----
+  // ---- Shovels API key (Cayden can change from Claude) ----
 
   server.registerTool(
-    'opensos_usage',
+    'shovels_api_key_status',
     {
-      title: 'OpenSOS monthly usage (quota)',
-      description: `WHEN TO USE: Check how many OpenSOS live lookups remain this month (limit 1000).
-WHAT IT DOES: Returns used/remaining/limit for the current UTC month. Free. No API spend.`,
+      title: 'Shovels API key — status (masked)',
+      description: `WHEN TO USE: Cayden asks whether a Shovels key is set, or before changing it.
+WHAT IT DOES: Returns configured/source/masked fingerprint only. Never the full key. Free.`,
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async () => jsonResult(await getOpenSosUsage()),
+    async () => jsonResult(await getShovelsKeyStatus()),
   );
 
   server.registerTool(
-    'opensos_estimate',
+    'shovels_set_api_key',
     {
-      title: 'OpenSOS estimate (required before spend)',
-      description: `WHEN TO USE: Before ANY live OpenSOS lookup. Pass one or many entity names.
-WHAT IT DOES: Classifies cache vs live vs skip; returns estimated_live_requests, estimated_cost_usd, monthly remaining. Does NOT call OpenSOS API.
-NEXT: Show the estimate to the human. Wait for explicit approval ("approve opensos" / "confirm"). Only then opensos_lookup(..., confirm_spend=true).
-HARD RULE: Never run live OpenSOS without showing this estimate and getting approval.`,
+      title: 'Shovels API key — set from Claude',
+      description: `WHEN TO USE: Cayden wants to paste/change the Shovels API key from Claude (no Railway env edit).
+WHAT IT DOES: Stores the key in memory and persists it to Supabase so Railway restarts keep it. Overwrites the env key at runtime.
+RULES: confirm must be true. Never repeat the full key in chat — only the masked fingerprint. Default set_by=cayden.`,
       inputSchema: {
-        entity_names: z
-          .array(z.string().min(1))
-          .min(1)
-          .max(200)
-          .describe('Entity names to estimate'),
-        state: z.string().optional().describe("Default 'TX'"),
-        force: z.boolean().optional().describe('Treat cache as miss'),
-        allow_non_llc: z.boolean().optional(),
+        api_key: z.string().min(1).describe('The Shovels API key. Do not echo this back in chat.'),
+        confirm: z
+          .boolean()
+          .describe('Must be true. Show Cayden you are about to replace the live Shovels key, then set true.'),
+        set_by: z.string().optional().describe('Who is changing it. Default cayden.'),
+        persist: z
+          .boolean()
+          .optional()
+          .describe('Save to Supabase so it survives restarts. Default true.'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult(
+          'Set confirm=true after Cayden agrees to replace the live Shovels API key. Do not echo the key.',
+        );
+      }
+      try {
+        return jsonResult(
+          await setShovelsApiKey({
+            api_key: args.api_key,
+            set_by: args.set_by,
+            persist: args.persist,
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'shovels_set_api_key failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'shovels_clear_api_key',
+    {
+      title: 'Shovels API key — clear Claude override',
+      description: `WHEN TO USE: Cayden wants to drop the Claude-set key and fall back to SHOVELS_API_KEY env (or unset).
+RULES: confirm must be true. Never echo any key.`,
+      inputSchema: {
+        confirm: z.boolean().describe('Must be true'),
+        set_by: z.string().optional().describe('Default cayden'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult('Set confirm=true to clear the Claude-set Shovels API key.');
+      }
+      try {
+        return jsonResult(await clearShovelsApiKey({ set_by: args.set_by }));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'shovels_clear_api_key failed');
+      }
+    },
+  );
+
+  // ---- Shovels API credit estimate + calling lists ----
+
+  server.registerTool(
+    'shovels_estimate_credits',
+    {
+      title: 'Estimate Shovels API credits',
+      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost.
+WHAT IT DOES: Probes Shovels include_count and returns TWO estimates: free_tier_pages (1 credit/page — last Dallas+Tarrant was ~65 / under 500) and paid_tier_companies (1 credit per contractor). Default geos = Dallas + Tarrant.
+NEXT: Show both numbers. Ask if they are on free or paid. Cached save_calling_list still costs 0.`,
+      inputSchema: {
+        geos: z
+          .string()
+          .optional()
+          .describe('Comma list: Dallas, Tarrant, Fort_Worth, Rockwall. Default Dallas+Tarrant'),
+        place: placeEnum,
+        city: z.string().optional(),
+        date_from: z.string().optional().describe('YYYY-MM-DD, default last 12 months'),
+        date_to: z.string().optional().describe('YYYY-MM-DD'),
+        property_type: z.string().optional().describe("Default 'commercial'"),
+        page_size: z.number().int().min(1).max(100).optional().describe('Default 100 (last DFW job)'),
+        max_records: z.number().int().min(1).optional(),
+        q: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async (args) => jsonResult(await estimateShovelsCredits(args)),
+  );
+
+  server.registerTool(
+    'save_calling_list',
+    {
+      title: 'Save contractor pull to Supabase calling list',
+      description: `WHEN TO USE: Persist a filtered Shovels GC pull so Cayden (or another caller) can filter it later via MCP.
+WHAT IT DOES: Writes matching contractors to public.scrape_leads and catalogs the list in permit_parcel.calling_lists (owner + name). 0 Shovels credits (local file). Returns counts + list id only.
+NEXT: Tell the user the list id and owner. They filter with list_calling_lists / query_calling_list.`,
+      inputSchema: {
+        name: z.string().optional().describe('Human list name, e.g. "Cayden Fort Worth GCs with phone"'),
+        owner: z
+          .string()
+          .optional()
+          .describe('Who the list is for, e.g. "cayden". Used as the filter key later.'),
+        q: z.string().optional(),
+        place: placeEnum,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_email: z.boolean().optional(),
+        has_phone: z.boolean().optional(),
+        has_website: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(
+          await saveCallingList({
+            name: args.name,
+            owner: args.owner,
+            contractor_query: {
+              q: args.q,
+              place: args.place,
+              city: args.city,
+              state: args.state,
+              has_email: args.has_email,
+              has_phone: args.has_phone,
+              has_website: args.has_website,
+            },
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'save_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'list_calling_lists',
+    {
+      title: 'List saved cold-calling lists',
+      description: `WHEN TO USE: Cayden (or anyone) asks what calling lists exist, or needs a list_id.
+WHAT IT DOES: Reads permit_parcel.calling_lists from Supabase. Filter by owner (e.g. cayden). Counts only + metadata. Free.`,
+      inputSchema: {
+        owner: z.string().optional().describe('e.g. cayden'),
+        q: z.string().optional().describe('Search list name / owner / id'),
+        limit: z.number().int().min(1).max(100).optional(),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async (args) => jsonResult(await openSosEstimate(args)),
+    async (args) => {
+      try {
+        return jsonResult(await listCallingLists(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'list_calling_lists failed');
+      }
+    },
   );
 
   server.registerTool(
-    'opensos_lookup',
+    'query_calling_list',
     {
-      title: 'OpenSOS entity → officers (local LLC, spend-gated)',
-      description: `WHEN TO USE: After opensos_estimate + explicit human approval for live calls.
-WHAT IT DOES: Cache hit = free (no confirm needed). Live call requires confirm_spend=true, counts against 1000/month, ~$0.03, writes to Supabase.
-WHEN NOT TO USE: institutional (drop) or individual (owner is DM). Never batch-live without estimate + approval.
-HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
+      title: 'Filter a saved calling list (cold calling)',
+      description: `WHEN TO USE: Cayden wants dialable contacts from a saved list (has phone, city, name search).
+WHAT IT DOES: Pages rows from the Supabase-backed list (max 50/page). Free. Does not re-pull Shovels.
+RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into chat.`,
       inputSchema: {
-        entity_name: z.string().min(1),
-        state: z.string().optional().describe("Default 'TX'"),
-        force: z.boolean().optional().describe('Bypass Supabase cache'),
-        allow_non_llc: z
-          .boolean()
+        list_id: z.string().optional().describe('Calling list / scrape job id from save_calling_list'),
+        owner: z.string().optional().describe('e.g. cayden — all of that owner\'s lists'),
+        q: z.string().optional(),
+        city: z.string().optional(),
+        state: z.string().optional(),
+        has_phone: z.boolean().optional().describe('true = dialable rows only'),
+        has_email: z.boolean().optional(),
+        dial_status: z
+          .enum(['owner_cell', 'owner_landline', 'company_line', 'needs_enrichment', 'skip'])
           .optional()
-          .describe('Override local_llc gate (use sparingly)'),
-        confirm_spend: z
-          .boolean()
-          .optional()
-          .describe(
-            'Must be true for live OpenSOS HTTP calls, and only after opensos_estimate + explicit user approval',
-          ),
+          .describe('After enrichment. owner_cell = Cayden can dial'),
+        page: z.number().int().min(1).optional(),
+        page_size: z.number().int().min(1).max(50).optional(),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await queryCallingList(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'query_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'enrichment_keys_status',
+    {
+      title: 'Enrichment API keys — status (masked)',
+      description: `WHEN TO USE: Before officer match or line-type lookup. Shows whether Veriphone + Texas Comptroller + Shovels keys are set. Never the full keys.`,
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => jsonResult(await enrichmentKeysStatus()),
+  );
+
+  server.registerTool(
+    'set_enrichment_api_key',
+    {
+      title: 'Set Veriphone or Texas Comptroller API key',
+      description: `WHEN TO USE: Cayden pastes a Veriphone or Texas CPA API key from Claude.
+RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_cpa_api_key (or shovels_api_key).`,
+      inputSchema: {
+        key: z
+          .enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key'])
+          .describe('Which key to set'),
+        api_key: z.string().min(1).describe('The secret. Do not echo this back.'),
+        confirm: z.boolean().describe('Must be true'),
+        set_by: z.string().optional(),
+        persist: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult('Set confirm=true after Cayden agrees to save the key. Do not echo it.');
+      }
+      try {
+        return jsonResult(
+          await setAppSetting({
+            key: args.key,
+            api_key: args.api_key,
+            set_by: args.set_by,
+            persist: args.persist,
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'set_enrichment_api_key failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'clear_enrichment_api_key',
+    {
+      title: 'Clear a Claude-set enrichment API key',
+      description: 'Drops the Claude override for Veriphone / Texas CPA / Shovels. confirm=true.',
+      inputSchema: {
+        key: z.enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key']),
+        confirm: z.boolean(),
+        set_by: z.string().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) return errorResult('Set confirm=true to clear the key.');
+      try {
+        return jsonResult(await clearAppSetting({ key: args.key, set_by: args.set_by }));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'clear failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'score_calling_list',
+    {
+      title: 'Score a calling list (free owner/office guess)',
+      description: `WHEN TO USE: After save_calling_list, before any paid lookup.
+WHAT IT DOES: Flags owner-likely vs company-line from email/name/shared phone. $0. Persists enrichment. Returns counts only.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(2000).optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await scoreCallingList(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'score_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'match_texas_officers',
+    {
+      title: 'Match Texas Comptroller officers (free PIR)',
+      description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
+WHAT IT DOES: Official Comptroller franchise search — officer name, title, home address. Free, no key required. Default cap 200.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(500).optional(),
+        only_unmatched: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    async (args) => jsonResult(await openSosLookup(args)),
+    async (args) => {
+      try {
+        return jsonResult(await matchTexasOfficers(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'match_texas_officers failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'lookup_line_type',
+    {
+      title: 'Veriphone line type (cell vs landline)',
+      description: `WHEN TO USE: After scoring, to mark Shovels phones as mobile/landline/voip.
+COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
+RULES: Show the estimate. confirm=true to spend. Default cap 200. Never echo the API key.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        confirm: z.boolean().optional().describe('Must be true to spend credits'),
+        limit: z.number().int().min(1).max(1000).optional(),
+        only_unknown: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await lookupLineTypes(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'lookup_line_type failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'owner_people_search',
+    {
+      title: 'Google / free people-search URLs for leftover owners',
+      description: `WHEN TO USE: Rows still needs_enrichment after officers + line type.
+WHAT IT DOES: Builds Google + FastPeopleSearch + TruePeopleSearch URLs from the officer name + city/zip. Does not scrape. Then record_owner_cell.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(50).optional().describe('Default 25 packs'),
+        dial_status: z.string().optional().describe('Default needs_enrichment'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await ownerPeopleSearch(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'owner_people_search failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'record_owner_cell',
+    {
+      title: 'Save a confirmed owner cell from people search',
+      description: `WHEN TO USE: After Cayden or Claude finds a wireless number on FastPeopleSearch/TruePeopleSearch that matches the officer address.
+WHAT IT DOES: Sets owner_cell + dial_status=owner_cell. Do not save landlines or relatives.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        lead_id: z.number().int(),
+        phone: z.string().min(7),
+        source: z.string().optional().describe('e.g. fastpeoplesearch'),
+        line_type: z.enum(['mobile', 'landline', 'voip', 'unknown']).optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await recordOwnerCell(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'record_owner_cell failed');
+      }
+    },
   );
 
   // ---- Operators (mailing-address rollup) ----
@@ -410,7 +761,7 @@ HARD RULE: If confirm_spend is not true, live lookups are blocked.`,
 WHAT IT DOES: Groups local CAD parcels by mailing address (strips C/O/ATTN/%); excludes out-of-state, municipal, and tax-department addresses; writes permit_parcel.operators; returns COUNTS only.
 DEFAULTS: min_parcels=2, min_llcs=1, exclude_out_of_state/municipal/tax_departments=true, home_states=TX.
 PRIME FILTER: min_llcs=3, min_portfolio_value=5000000.
-DO NOT buy OpenSOS/SOSDirect for every LLC — resolve operators first; prefer free Texas Comptroller PIR later.`,
+Do not buy paid SOS unmasking for every LLC — resolve operators first; prefer free Texas Comptroller PIR later.`,
       inputSchema: {
         min_parcels: z.number().int().min(1).optional(),
         min_llcs: z.number().int().min(1).optional(),
@@ -453,6 +804,14 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
         owner_type: ownerTypeEnum.describe('Optional parcel owner_type filter'),
         place: placeEnum.describe('Optional Shovels place filter'),
         q: z.string().optional().describe('Optional text filter for the chosen dataset'),
+        list_name: z
+          .string()
+          .optional()
+          .describe('When syncing contractors, name the calling list (Cayden will see this)'),
+        owner: z
+          .string()
+          .optional()
+          .describe('When syncing contractors, who owns the calling list (e.g. cayden)'),
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
@@ -460,6 +819,8 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
       try {
         const result = await syncToSupabase({
           dataset: args.dataset,
+          list_name: args.list_name,
+          owner: args.owner,
           parcel_query: {
             county: args.county,
             owner_type: args.owner_type,
@@ -494,10 +855,96 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
             type: 'text',
             text: `Permit & Parcel MCP — Shovels contractors.
 Request: "${request || 'Summarize the contractor file'}"
-1) permits_contractors_summary
-2) query/sample as needed (paginate)
-3) sync_to_supabase(dataset=contractors) for bulk persistence
-4) verify with select count(*) — never dump all rows into chat.`,
+1) If they want to change the Shovels key: shovels_set_api_key (confirm=true). Never echo the full key.
+2) If they ask cost/credits: shovels_estimate_credits (show free pages AND paid companies)
+3) permits_contractors_summary / query/sample as needed (paginate)
+4) save_calling_list with owner (e.g. cayden) so the pull lands in Supabase
+5) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
+6) verify with select count(*) — never dump all rows into chat.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pp_set_shovels_key',
+    {
+      title: 'Set or change the Shovels API key',
+      description: 'Use when Cayden wants to paste a new Shovels API key from Claude.',
+      argsSchema: {
+        request: z.string().optional(),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Permit & Parcel MCP — Shovels API key.
+Request: "${request || 'Cayden wants to set or change the Shovels API key'}"
+1) shovels_api_key_status — show only the masked fingerprint
+2) Ask Cayden to paste the new key in chat
+3) shovels_set_api_key with confirm=true, set_by=cayden, persist=true
+4) Never repeat the full key. Confirm the new masked fingerprint.
+5) Optionally shovels_estimate_credits to verify the key works.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pp_filter_calling_list',
+    {
+      title: 'Filter a saved cold-calling list',
+      description: 'Use when Cayden (or another caller) wants to pull/filter a saved Shovels list.',
+      argsSchema: {
+        request: z.string().optional(),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Permit & Parcel MCP — saved calling lists.
+Request: "${request || 'Show Cayden calling lists with phone numbers'}"
+1) If they asked Shovels credit cost first, call shovels_estimate_credits
+2) list_calling_lists (owner=cayden if named)
+3) query_calling_list with has_phone=true (paginate ≤50)
+4) Never dump the full list into chat. Summarize counts and offer the next page.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pp_enrich_owner_cells',
+    {
+      title: 'Enrich a calling list to owner cells',
+      description: 'Score, Comptroller officers, Veriphone line type, then people-search leftovers.',
+      argsSchema: {
+        request: z.string().optional(),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Permit & Parcel MCP — owner-cell enrichment.
+Request: "${request || 'Get Cayden owner cells on his latest list'}"
+1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
+2) list_calling_lists(owner=cayden) then score_calling_list
+3) match_texas_officers
+4) lookup_line_type without confirm (show $), then confirm=true
+5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
+6) query_calling_list(dial_status=owner_cell). Do not dump the list.`,
           },
         },
       ],
@@ -507,8 +954,8 @@ Request: "${request || 'Summarize the contractor file'}"
   server.registerPrompt(
     'pp_query_parcels',
     {
-      title: 'Query appraisal parcels + optional OpenSOS',
-      description: 'DCAD/TAD/CCAD commercial parcels; OpenSOS for local_llc only.',
+      title: 'Query appraisal parcels',
+      description: 'DCAD/TAD/CCAD commercial parcels + operator rollup.',
       argsSchema: {
         request: z.string().optional(),
       },
@@ -523,7 +970,7 @@ Request: "${request || 'Summarize the contractor file'}"
 Request: "${request || 'Summarize commercial parcels'}"
 1) parcels_summary
 2) parcels_query with filters; note owner_type split
-3) Drop institutional. For local_llc: opensos_estimate → show live request count + $ + monthly remaining → WAIT for explicit approval → opensos_lookup(confirm_spend=true). Cap 1000/month.
+3) Drop institutional. For local_llc, use build_operators + free Texas Comptroller PIR.
 4) sync_to_supabase(dataset=parcels) then select count(*)
 Propwire cascade is removed — do not offer it.`,
           },
