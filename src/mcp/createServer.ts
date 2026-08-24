@@ -664,7 +664,7 @@ WHAT IT DOES: Flags owner-likely vs company-line from email/name/shared phone. $
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Official Comptroller API — officer name, title, address. Free with TEXAS_CPA_API_KEY. Default cap 200.`,
+WHAT IT DOES: Official Comptroller franchise search — officer name, title, home address. Free, no key required. Default cap 200.`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(500).optional(),

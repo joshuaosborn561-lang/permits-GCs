@@ -200,7 +200,7 @@ export async function matchTexasOfficers(opts: {
   if (!hasTexasCpa()) {
     return {
       ok: false,
-      error: 'Texas Comptroller API key is not set. Cayden pastes it with set_enrichment_api_key(key=texas_cpa_api_key).',
+      error: 'Texas officer source is unavailable.',
     };
   }
   const rows = await fetchContacts(opts.list_id.trim(), opts.limit ?? 200);

@@ -1,6 +1,9 @@
 import { getSetting, loadAppSettings } from './appSettings.js';
 
-const BASE = 'https://api.comptroller.texas.gov/public-data/v1/public';
+/** Official website proxy — same officer data, no API key. */
+const PUBLIC_BASE = 'https://comptroller.texas.gov/data-search/franchise-tax';
+/** Gated API Gateway. Cayden's Tax Account key currently 403s here. */
+const GATED_BASE = 'https://api.comptroller.texas.gov/public-data/v1/public';
 
 export interface ComptrollerOfficer {
   name: string;
@@ -43,65 +46,71 @@ function cleanName(name: string): string {
     .slice(0, 50);
 }
 
+async function readJson(url: string, key?: string) {
+  const hdrs: HeadersInit = {
+    Accept: 'application/json',
+    'User-Agent': 'PermitParcelMCP/2.0 (owner-cell enrichment)',
+  };
+  if (key) Object.assign(hdrs, headers(key));
+  const res = await fetch(url, { headers: hdrs });
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  return { res, body };
+}
+
 export async function searchFranchiseEntities(name: string): Promise<Array<{ taxpayerId: string; name: string }>> {
   await loadAppSettings();
-  const key = getSetting('texas_cpa_api_key');
-  if (!key) {
-    throw new Error('TEXAS_CPA_API_KEY is not set — Cayden can paste it with set_enrichment_api_key');
-  }
   const q = cleanName(name);
   if (q.length < 2) return [];
-  const url = new URL(`${BASE}/franchise-tax-list`);
-  url.searchParams.set('name', q);
-  const res = await fetch(url, { headers: headers(key) });
-  const body = (await res.json().catch(() => null)) as {
-    success?: boolean;
-    data?: Array<{ taxpayerId?: string; name?: string }>;
-    message?: string;
-  } | null;
+  const publicUrl = new URL(PUBLIC_BASE);
+  publicUrl.searchParams.set('name', q);
+  let { res, body } = await readJson(publicUrl.toString());
   if (!res.ok) {
-    throw new Error(`Texas CPA search ${res.status}: ${body?.message || res.statusText}`);
+    const key = getSetting('texas_cpa_api_key');
+    if (key) {
+      const gated = new URL(`${GATED_BASE}/franchise-tax-list`);
+      gated.searchParams.set('name', q);
+      ({ res, body } = await readJson(gated.toString(), key));
+    }
   }
-  return (body?.data ?? [])
+  if (!res.ok) {
+    throw new Error(`Texas CPA search ${res.status}: ${String(body?.message || res.statusText)}`);
+  }
+  const data = (body?.data as Array<{ taxpayerId?: string; name?: string }> | undefined) ?? [];
+  return data
     .filter((r) => r.taxpayerId && r.name)
     .map((r) => ({ taxpayerId: String(r.taxpayerId), name: String(r.name) }));
 }
 
 export async function getFranchiseAccount(taxpayerId: string): Promise<ComptrollerEntity | null> {
   await loadAppSettings();
-  const key = getSetting('texas_cpa_api_key');
-  if (!key) {
-    throw new Error('TEXAS_CPA_API_KEY is not set — Cayden can paste it with set_enrichment_api_key');
-  }
   const id = taxpayerId.replace(/\D/g, '').padStart(11, '0').slice(-11);
-  const res = await fetch(`${BASE}/franchise-tax/${id}`, { headers: headers(key) });
-  if (res.status === 404) return null;
-  const body = (await res.json().catch(() => null)) as {
-    success?: boolean;
-    data?: {
-      taxpayerId?: string;
-      name?: string;
-      dbaName?: string;
-      sosFileNumber?: string;
-      rightToTransactTX?: string;
-      registeredAgentName?: string;
-      officerInfo?: Array<{
-        AGNT_NM?: string;
-        AGNT_TITL_TX?: string;
-        AGNT_ACTV_YR?: string;
-        AD_STR_POB_TX?: string;
-        CITY_NM?: string;
-        ST_CD?: string;
-        AD_ZP?: string;
-        SOURCE?: string;
-      }>;
-    };
-    message?: string;
-  } | null;
-  if (!res.ok) {
-    throw new Error(`Texas CPA detail ${res.status}: ${body?.message || res.statusText}`);
+  let { res, body } = await readJson(`${PUBLIC_BASE}/${id}`);
+  if (!res.ok && res.status !== 404) {
+    const key = getSetting('texas_cpa_api_key');
+    if (key) ({ res, body } = await readJson(`${GATED_BASE}/franchise-tax/${id}`, key));
   }
-  const d = body?.data;
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`Texas CPA detail ${res.status}: ${String(body?.message || res.statusText)}`);
+  }
+  const d = body?.data as {
+    taxpayerId?: string;
+    name?: string;
+    dbaName?: string;
+    sosFileNumber?: string;
+    rightToTransactTX?: string;
+    registeredAgentName?: string;
+    officerInfo?: Array<{
+      AGNT_NM?: string;
+      AGNT_TITL_TX?: string;
+      AGNT_ACTV_YR?: string;
+      AD_STR_POB_TX?: string;
+      CITY_NM?: string;
+      ST_CD?: string;
+      AD_ZP?: string;
+      SOURCE?: string;
+    }>;
+  } | undefined;
   if (!d) return null;
   const ra = d.registeredAgentName || '';
   return {
@@ -206,5 +215,5 @@ function rankTitle(title: string): number {
 }
 
 export function hasTexasCpa(): boolean {
-  return Boolean(getSetting('texas_cpa_api_key'));
+  return true;
 }
