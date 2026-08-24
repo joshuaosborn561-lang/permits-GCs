@@ -206,6 +206,9 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     source: live ? 'shovels_api_include_count' : liveError ? 'last_job_fallback' : 'last_job_no_api_key',
     live_api: live,
     shovels_api_configured: hasShovelsApi(),
+    key_hint: hasShovelsApi()
+      ? null
+      : 'No Shovels key on this server. Cayden can set one with shovels_set_api_key (confirm=true). Never echo the full key.',
     live_error: liveError,
     spends_shovels_credits: live,
     probe_credits_spent: live ? probeCredits : 0,
@@ -242,7 +245,8 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
       state: q.state ?? null,
     },
     explanation: `Dallas+Tarrant-style pull: ~${pages} pages / ~${companies} companies. Free/trial (page meter): ~${pages} credits. Paid (company meter): ~${companies} credits. Last DFW job used 67 requests for 6,124 unique contractors and stayed under 500 — that is the free/page meter, not paid.`,
-    assistant_instructions:
-      'Always show BOTH numbers: credits.free_tier_pages vs credits.paid_tier_companies. Ask which plan the key is on. Last Dallas+Tarrant under 500 = free/page billing. If they are on paid now, quote paid_tier_companies. Cached list tools still cost 0.',
+    assistant_instructions: hasShovelsApi()
+      ? 'Always show BOTH numbers: credits.free_tier_pages vs credits.paid_tier_companies. Ask which plan the key is on. Last Dallas+Tarrant under 500 = free/page billing. If they are on paid now, quote paid_tier_companies. Cached list tools still cost 0.'
+      : 'No API key is configured, so this is the last-job fallback. Offer shovels_set_api_key so Cayden can paste a key. Never echo the full key. Still show both free_tier_pages and paid_tier_companies.',
   };
 }

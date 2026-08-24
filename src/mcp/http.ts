@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { getShovelsKeyStatus } from '../server/lib/shovelsKey.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
 import { createPermitParcelMcpServer } from './createServer.js';
 
@@ -125,8 +126,9 @@ export function mountMcpHttp(app: Express): void {
     }
   });
 
-  app.get('/mcp/health', (_req, res) => {
+  app.get('/mcp/health', async (_req, res) => {
     const target = supabaseTargetMeta();
+    const shovelsKey = await getShovelsKeyStatus();
     res.json({
       ok: true,
       product: 'Permit & Parcel MCP',
@@ -139,8 +141,12 @@ export function mountMcpHttp(app: Express): void {
       activeSessions: Object.keys(transports).length,
       supabase_project: target.supabase_project,
       supabase_schema: target.supabase_schema,
+      shovels_api_key: shovelsKey,
       tools: [
         'health',
+        'shovels_api_key_status',
+        'shovels_set_api_key',
+        'shovels_clear_api_key',
         'permits_contractors_summary',
         'permits_contractors_query',
         'permits_contractors_sample',
@@ -157,7 +163,12 @@ export function mountMcpHttp(app: Express): void {
         'build_operators',
         'sync_to_supabase',
       ],
-      prompts: ['pp_query_contractors', 'pp_filter_calling_list', 'pp_query_parcels'],
+      prompts: [
+        'pp_query_contractors',
+        'pp_set_shovels_key',
+        'pp_filter_calling_list',
+        'pp_query_parcels',
+      ],
       resources: ['permit-parcel://guide', 'permit-parcel://when-to-use'],
       http: {
         parcels_summary: '/api/parcels/summary',
@@ -165,12 +176,13 @@ export function mountMcpHttp(app: Express): void {
         parcels_sync: 'POST /api/parcels/sync-to-supabase',
         contractors: '/api/shovels/contractors',
         shovels_estimate_credits: 'GET /api/shovels/contractors/estimate-credits',
+        shovels_api_key: 'GET|POST|DELETE /api/shovels/api-key',
         calling_lists: '/api/calling-lists',
         calling_lists_query: 'GET /api/calling-lists/query',
         build_operators: 'POST /api/build-operators',
         sync_to_supabase: 'POST /api/sync-to-supabase',
       },
-      note: 'Authless MCP. Propwire cascade removed. Prefer sync_to_supabase + select count(*). Check supabase_project on /api/health.',
+      note: 'Authless MCP. Cayden can set the Shovels key with shovels_set_api_key. Never echo the full key. Prefer sync_to_supabase + select count(*).',
     });
   });
 }

@@ -76,9 +76,10 @@ export default function App() {
       <section className="mcp">
         <h2>MCP</h2>
         <p>
-          Connect Claude to <code>/mcp</code> (authless). Ask for a Shovels credit
-          estimate, then <code>save_calling_list</code> so Cayden can filter it. Prefer{' '}
-          <code>select count(*)</code> over row dumps.
+          Connect Claude to <code>/mcp</code> (authless). Cayden can set the Shovels
+          key with <code>shovels_set_api_key</code>, ask for a credit estimate, then{' '}
+          <code>save_calling_list</code>. Prefer <code>select count(*)</code> over row
+          dumps. Never echo the full API key.
         </p>
       </section>
     </div>

@@ -1,6 +1,11 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { config } from '../server/config.js';
+import {
+  clearShovelsApiKey,
+  getShovelsKeyStatus,
+  setShovelsApiKey,
+} from '../server/lib/shovelsKey.js';
 import { hasSupabase, SCHEMA } from '../server/lib/supabase.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
 import {
@@ -55,8 +60,9 @@ const ownerTypeEnum = z
   .enum(['individual', 'local_llc', 'institutional', 'municipal', 'unknown'])
   .optional();
 
-function healthPayload() {
+async function healthPayload() {
   const target = supabaseTargetMeta();
+  const shovelsKey = await getShovelsKeyStatus();
   return {
     ok: true,
     product: 'Permit & Parcel MCP',
@@ -65,15 +71,16 @@ function healthPayload() {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
-    shovels_api_configured: Boolean(config.shovelsApiKey),
+    shovels_api_configured: shovelsKey.configured,
+    shovels_api_key: shovelsKey,
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
-      'Shovels commercial GCs (including credit estimates); DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
+      'Shovels commercial GCs (including credit estimates); change the Shovels API key from Claude; DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Shovels credits: shovels_estimate_credits (live include_count; full pull ≈ pages at size=100 — last Dallas+Tarrant was ~65 credits). Contractors: summary → estimate → save_calling_list. Cayden: list_calling_lists → query_calling_list. Parcels → sync_to_supabase → build_operators.',
+      'Key: shovels_api_key_status / shovels_set_api_key (Cayden). Credits: shovels_estimate_credits (show free pages AND paid companies). Contractors: summary → estimate → save_calling_list. Cayden: list_calling_lists → query_calling_list. Parcels → sync_to_supabase → build_operators.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -86,7 +93,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) persist those pulls to Supabase calling lists; (3) filter saved lists for cold calling (Cayden etc.); (4) DCAD/TAD/CCAD commercial parcels; (5) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS unmasking. Prefer save_calling_list / sync_to_supabase + select count(*).',
+        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) Cayden can set/change the Shovels API key from Claude; (3) persist those pulls to Supabase calling lists; (4) filter saved lists for cold calling; (5) DCAD/TAD/CCAD commercial parcels; (6) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS unmasking. Prefer save_calling_list / sync_to_supabase + select count(*). Never echo a full API key.',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -126,7 +133,7 @@ export function createPermitParcelMcpServer(): McpServer {
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
-    async () => jsonResult(healthPayload()),
+    async () => jsonResult(await healthPayload()),
   );
 
   // ---- Shovels / permits contractors (behavior unchanged; prefix renamed) ----
@@ -336,6 +343,84 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
         csv: parcelsToCsv(capped),
         hint: 'For bulk persistence use sync_to_supabase(dataset=parcels).',
       });
+    },
+  );
+
+  // ---- Shovels API key (Cayden can change from Claude) ----
+
+  server.registerTool(
+    'shovels_api_key_status',
+    {
+      title: 'Shovels API key — status (masked)',
+      description: `WHEN TO USE: Cayden asks whether a Shovels key is set, or before changing it.
+WHAT IT DOES: Returns configured/source/masked fingerprint only. Never the full key. Free.`,
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => jsonResult(await getShovelsKeyStatus()),
+  );
+
+  server.registerTool(
+    'shovels_set_api_key',
+    {
+      title: 'Shovels API key — set from Claude',
+      description: `WHEN TO USE: Cayden wants to paste/change the Shovels API key from Claude (no Railway env edit).
+WHAT IT DOES: Stores the key in memory and persists it to Supabase so Railway restarts keep it. Overwrites the env key at runtime.
+RULES: confirm must be true. Never repeat the full key in chat — only the masked fingerprint. Default set_by=cayden.`,
+      inputSchema: {
+        api_key: z.string().min(1).describe('The Shovels API key. Do not echo this back in chat.'),
+        confirm: z
+          .boolean()
+          .describe('Must be true. Show Cayden you are about to replace the live Shovels key, then set true.'),
+        set_by: z.string().optional().describe('Who is changing it. Default cayden.'),
+        persist: z
+          .boolean()
+          .optional()
+          .describe('Save to Supabase so it survives restarts. Default true.'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult(
+          'Set confirm=true after Cayden agrees to replace the live Shovels API key. Do not echo the key.',
+        );
+      }
+      try {
+        return jsonResult(
+          await setShovelsApiKey({
+            api_key: args.api_key,
+            set_by: args.set_by,
+            persist: args.persist,
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'shovels_set_api_key failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'shovels_clear_api_key',
+    {
+      title: 'Shovels API key — clear Claude override',
+      description: `WHEN TO USE: Cayden wants to drop the Claude-set key and fall back to SHOVELS_API_KEY env (or unset).
+RULES: confirm must be true. Never echo any key.`,
+      inputSchema: {
+        confirm: z.boolean().describe('Must be true'),
+        set_by: z.string().optional().describe('Default cayden'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult('Set confirm=true to clear the Claude-set Shovels API key.');
+      }
+      try {
+        return jsonResult(await clearShovelsApiKey({ set_by: args.set_by }));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'shovels_clear_api_key failed');
+      }
     },
   );
 
@@ -572,11 +657,40 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
             type: 'text',
             text: `Permit & Parcel MCP — Shovels contractors.
 Request: "${request || 'Summarize the contractor file'}"
-1) If they ask cost/credits: shovels_estimate_credits (page-based; last Dallas+Tarrant ~65 credits)
-2) permits_contractors_summary / query/sample as needed (paginate)
-3) save_calling_list with owner (e.g. cayden) so the pull lands in Supabase
-4) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
-5) verify with select count(*) — never dump all rows into chat.`,
+1) If they want to change the Shovels key: shovels_set_api_key (confirm=true). Never echo the full key.
+2) If they ask cost/credits: shovels_estimate_credits (show free pages AND paid companies)
+3) permits_contractors_summary / query/sample as needed (paginate)
+4) save_calling_list with owner (e.g. cayden) so the pull lands in Supabase
+5) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
+6) verify with select count(*) — never dump all rows into chat.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pp_set_shovels_key',
+    {
+      title: 'Set or change the Shovels API key',
+      description: 'Use when Cayden wants to paste a new Shovels API key from Claude.',
+      argsSchema: {
+        request: z.string().optional(),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Permit & Parcel MCP — Shovels API key.
+Request: "${request || 'Cayden wants to set or change the Shovels API key'}"
+1) shovels_api_key_status — show only the masked fingerprint
+2) Ask Cayden to paste the new key in chat
+3) shovels_set_api_key with confirm=true, set_by=cayden, persist=true
+4) Never repeat the full key. Confirm the new masked fingerprint.
+5) Optionally shovels_estimate_credits to verify the key works.`,
           },
         },
       ],

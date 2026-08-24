@@ -6,10 +6,11 @@ GitHub: https://github.com/joshuaosborn561-lang/permits-GCs
 SalesGlider MCP for public **permit + parcel** records — not a people-resolver:
 
 1. **Shovels commercial contractors** (~6,124 DFW GCs) — cached CSV
-2. **Shovels API credit estimates** — live `include_count`; full pull ≈ pages at size=100
-3. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
-4. **Appraisal-district commercial parcels** — DCAD / TAD / CCAD bulk extracts
-5. **Operator rollup** — group shell LLCs by normalised tax-bill mailing address (`build_operators`)
+2. **Shovels API key from Claude** — Cayden can set or change it with `shovels_set_api_key`
+3. **Shovels API credit estimates** — live `include_count`; quote free (pages) and paid (companies)
+4. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
+5. **Appraisal-district commercial parcels** — DCAD / TAD / CCAD bulk extracts
+6. **Operator rollup** — group shell LLCs by normalised tax-bill mailing address (`build_operators`)
 
 The Propwire → LoopNet → Google owner cascade was **removed**.
 
@@ -23,6 +24,9 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | Tool | Purpose |
 |------|---------|
 | `health` | Readiness + `supabase_project` + loaded counts |
+| `shovels_api_key_status` | Masked fingerprint of the live Shovels key |
+| `shovels_set_api_key` | Cayden sets/changes the key from Claude (`confirm=true`) |
+| `shovels_clear_api_key` | Drop the Claude override and fall back to env |
 | `shovels_estimate_credits` | How many Shovels API credits a filter would cost |
 | `permits_contractors_*` | Shovels GC summary/query/sample/export |
 | `save_calling_list` | Write a filtered pull to Supabase (`owner` e.g. `cayden`) |
@@ -37,13 +41,16 @@ Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authle
 
 ## Shovels credits
 
-`shovels_estimate_credits` calls Shovels `include_count` (one cheap request per city/county) and estimates a full pull as **page count at size=100**. That matches the last Dallas + Tarrant commercial job: **65 pages, well under 500 credits**, not 1 credit per contractor. Set `SHOVELS_API_KEY` for a live probe; without it the tool uses that last job’s page counts.
+`shovels_estimate_credits` calls Shovels `include_count` (one cheap request per city/county) and returns **both** meters: free/trial **pages** and paid **companies**. Last Dallas + Tarrant commercial job was **65 pages / ~6,400 companies**. A Railway `SHOVELS_API_KEY` still works as fallback.
+
+Cayden can change the live key from Claude with `shovels_set_api_key` (`confirm=true`). The server never echoes the full key — only a masked fingerprint. The value is stored in `permit_parcel.app_settings` and reloaded on restart. This MCP is authless, so anyone with the connector URL can set the key.
 
 ## Calling lists (Cayden)
 
-1. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
-2. Save: `save_calling_list` with `owner=cayden` and a name
-3. Later: `list_calling_lists(owner=cayden)` → `query_calling_list(has_phone=true)`
+1. Optional: `shovels_set_api_key` if he wants to use his own Shovels key
+2. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
+3. Save: `save_calling_list` with `owner=cayden` and a name
+4. Later: `list_calling_lists(owner=cayden)` → `query_calling_list(has_phone=true)`
 
 ## Sync rules
 
@@ -77,7 +84,7 @@ Normalized commercial CSVs (refresh annually):
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_INGEST_SECRET=
-SHOVELS_API_KEY=
+SHOVELS_API_KEY=   # optional fallback; Cayden can set the live key from Claude
 ```
 
 ## Run

@@ -6,8 +6,10 @@ import { mountMcpHttp } from '../mcp/http.js';
 import { config } from './config.js';
 import { hasSupabase, SCHEMA } from './lib/supabase.js';
 import { supabaseTargetMeta } from './lib/supabaseTarget.js';
+import { getShovelsKeyStatus, loadPersistedShovelsKey } from './lib/shovelsKey.js';
 import { callingListsRouter } from './routes/callingLists.js';
 import { parcelsRouter } from './routes/parcels.js';
+import { shovelsApiKeyRouter } from './routes/shovelsApiKey.js';
 import { shovelsContractorsRouter } from './routes/shovelsContractors.js';
 import { buildOperators } from './services/operators.js';
 import { loadParcels, parcelsSummary } from './services/parcels.js';
@@ -23,6 +25,7 @@ app.use(express.json({ limit: '4mb' }));
 
 app.get('/api/health', async (_req, res) => {
   const target = supabaseTargetMeta();
+  const shovelsKey = await getShovelsKeyStatus();
   res.json({
     ok: true,
     product: 'Permit & Parcel MCP',
@@ -31,7 +34,8 @@ app.get('/api/health', async (_req, res) => {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
-    shovelsApiConfigured: Boolean(config.shovelsApiKey),
+    shovelsApiConfigured: shovelsKey.configured,
+    shovels_api_key: shovelsKey,
     shovelsContractorsLoaded: loadShovelsContractors().length,
     parcelsLoaded: loadParcels().length,
     parcels: parcelsSummary(),
@@ -45,6 +49,7 @@ app.get('/api/health', async (_req, res) => {
 
 app.use('/api/parcels', parcelsRouter);
 app.use('/api/shovels/contractors', shovelsContractorsRouter);
+app.use('/api/shovels/api-key', shovelsApiKeyRouter);
 app.use('/api/calling-lists', callingListsRouter);
 
 app.post('/api/sync-to-supabase', async (req, res) => {
@@ -118,6 +123,13 @@ app.use((req, res, next) => {
 });
 
 app.listen(config.port, () => {
+  void loadPersistedShovelsKey().then(() =>
+    getShovelsKeyStatus().then((key) => {
+      console.log(
+        `Shovels key: ${key.configured ? `${key.source} ${key.masked}` : 'unset (Cayden can set via shovels_set_api_key)'}`,
+      );
+    }),
+  );
   const contractors = loadShovelsContractors();
   const parcels = loadParcels();
   console.log(`Permit & Parcel MCP listening on :${config.port}`);

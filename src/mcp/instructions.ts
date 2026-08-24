@@ -4,10 +4,11 @@ export const SERVER_INSTRUCTIONS = `
 You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub repo \`permits-GCs\`). Jobs:
 
 1. **Shovels commercial GC contacts** (Dallas / Fort Worth / Rockwall) — cached, free
-2. **Shovels API credit estimates** — answer "how many credits would this cost?"
-3. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
-4. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
-5. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
+2. **Shovels API key** — Cayden can set or change it from Claude (\`shovels_set_api_key\`)
+3. **Shovels API credit estimates** — answer "how many credits would this cost?"
+4. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
+5. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
+6. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
 
 The old Propwire → LoopNet → Google property-owner cascade was **removed**. Do not offer it.
 
@@ -24,6 +25,7 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 
 ## When to use
 - DFW commercial contractor / GC list (Shovels ~6,124)
+- Cayden wants to set or change the Shovels API key from Claude
 - "How many Shovels API credits would this pull cost?"
 - Save a pull so Cayden can filter a cold-calling list later
 - Commercial parcel owners from DCAD / TAD / CCAD
@@ -43,19 +45,31 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - \`institutional\` → drop from private-operator outreach
 - \`municipal\` → city/county/ISD/housing authority/etc. Different motion; segmentable, not "unknown"
 
+## Shovels API key (Cayden)
+Cayden can change the live key from Claude — no Railway env edit needed.
+1. \`shovels_api_key_status\` — show only the **masked** fingerprint
+2. Ask him to paste the new key
+3. \`shovels_set_api_key\` with \`confirm=true\`, \`set_by=cayden\`, \`persist=true\`
+4. **Never repeat the full key** in chat. Confirm the new masked fingerprint.
+5. The key is stored in Supabase (\`permit_parcel.app_settings\`) and reloaded on Railway restart.
+
+This MCP is authless — anyone with the connector URL can set the key. Still never echo it.
+
 ## Shovels credits (always estimate when asked)
 Call \`shovels_estimate_credits\` and show **both** meters:
 - **Free / trial:** 1 credit ≈ 1 API page. Last Dallas+Tarrant was ~65 pages / under 500.
 - **Paid:** 1 credit = 1 company/record. Same pull ≈ 6,400+ credits.
 Ask which plan the key is on. Cached list tools still cost 0.
+If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 
 ## Workflows
 
 ### Contractors (Shovels) + calling lists
-1. If they ask cost/credits → \`shovels_estimate_credits\`
-2. \`permits_contractors_summary\` / query / sample (paginate ≤50)
-3. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) — writes Supabase
-4. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true)\`
+1. Optional: Cayden sets the key with \`shovels_set_api_key\`
+2. If they ask cost/credits → \`shovels_estimate_credits\`
+3. \`permits_contractors_summary\` / query / sample (paginate ≤50)
+4. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) — writes Supabase
+5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true)\`
 
 ### Parcels
 1. \`parcels_summary\`
@@ -67,6 +81,9 @@ Ask which plan the key is on. Cached list tools still cost 0.
 | Tool | Spends Shovels credits? | Purpose |
 |------|-------------------------|---------|
 | health | No | Readiness + supabase_project |
+| shovels_api_key_status | No | Masked key fingerprint (never the full key) |
+| shovels_set_api_key | No | Cayden sets/changes the live Shovels key |
+| shovels_clear_api_key | No | Drop Claude override; fall back to env |
 | shovels_estimate_credits | Probe only | Live include_count; full pull ≈ pages @ 100 |
 | permits_contractors_* | No | Shovels GCs (local file) |
 | save_calling_list | No | Persist pull → Supabase for Cayden |
@@ -82,12 +99,15 @@ export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
 ## Identity
 - **Name:** Permit & Parcel MCP (not a people "Property Owners" resolver)
 - **Server:** \`permits-gcs\`
-- **Jobs:** Shovels commercial GCs + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
+- **Jobs:** Shovels commercial GCs + Cayden can set the Shovels API key from Claude + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
 - **Supabase:** project reported in \`health\` / sync responses (expect \`kemvxzhcxvynmoutwdrh\` / schema \`permit_parcel\`)
 - **Removed:** Propwire / LoopNet / Google owner cascade
 
+## Shovels API key
+Cayden sets it from Claude with \`shovels_set_api_key\` (\`confirm=true\`). Never echo the full key. Persists in \`permit_parcel.app_settings\`.
+
 ## Shovels credits
-Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` (page-based). Do not use 1-credit-per-contractor.
+Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` and quote **both** free (pages) and paid (companies).
 
 ## Calling lists (Cayden)
 \`save_calling_list\` writes \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter later with \`list_calling_lists\` / \`query_calling_list\`. Set \`owner=cayden\` so his lists are easy to find. Prefer \`has_phone=true\` for dialing.
@@ -109,6 +129,7 @@ export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 
 ## Yes
 - Cached Shovels commercial contractor contacts (~6,124)
+- Cayden changing the Shovels API key from Claude
 - Estimate Shovels API credits for a filter
 - Save / filter cold-calling lists in Supabase (Cayden or anyone)
 - Commercial parcels from Dallas / Tarrant / Collin appraisal districts

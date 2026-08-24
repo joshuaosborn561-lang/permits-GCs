@@ -1,4 +1,5 @@
 import { config } from '../config.js';
+import { getShovelsApiKey, hasShovelsApi as hasRuntimeShovelsKey } from './shovelsKey.js';
 
 const BASE = config.shovelsBaseUrl || 'https://api.shovels.ai/v2';
 
@@ -39,12 +40,13 @@ function creditHeaders(res: Response): ShovelsHeaders {
 }
 
 export function hasShovelsApi(): boolean {
-  return Boolean(config.shovelsApiKey);
+  return hasRuntimeShovelsKey();
 }
 
 async function shovelsGet(path: string, query: Record<string, string | number | boolean | undefined>) {
-  if (!config.shovelsApiKey) {
-    throw new Error('SHOVELS_API_KEY is not configured');
+  const apiKey = getShovelsApiKey();
+  if (!apiKey) {
+    throw new Error('SHOVELS_API_KEY is not configured — Cayden can set it with shovels_set_api_key');
   }
   const url = new URL(path.startsWith('http') ? path : `${BASE}${path}`);
   for (const [k, v] of Object.entries(query)) {
@@ -54,7 +56,7 @@ async function shovelsGet(path: string, query: Record<string, string | number | 
   const res = await fetch(url, {
     method: 'GET',
     headers: {
-      'X-API-Key': config.shovelsApiKey,
+      'X-API-Key': apiKey,
       Accept: 'application/json',
     },
   });
