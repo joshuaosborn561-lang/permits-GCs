@@ -16,6 +16,12 @@ function boolParam(v: unknown): boolean | undefined {
   return undefined;
 }
 
+function intParam(v: unknown): number | undefined {
+  if (v === undefined || v === null || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
 function queryFromReq(req: { query: Record<string, unknown> }): ContractorQuery {
   return {
     q: typeof req.query.q === 'string' ? req.query.q : undefined,
@@ -25,6 +31,9 @@ function queryFromReq(req: { query: Record<string, unknown> }): ContractorQuery 
     has_email: boolParam(req.query.has_email),
     has_phone: boolParam(req.query.has_phone),
     has_website: boolParam(req.query.has_website),
+    min_permit_count: intParam(req.query.min_permit_count),
+    max_permit_count: intParam(req.query.max_permit_count),
+    exclude_national_chains: boolParam(req.query.exclude_national_chains),
   };
 }
 

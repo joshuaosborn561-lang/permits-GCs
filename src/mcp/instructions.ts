@@ -77,9 +77,9 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 ### Contractors (Shovels) + calling lists
 1. Optional: Cayden sets the key with \`shovels_set_api_key\`
 2. If they ask cost/credits → \`shovels_estimate_credits\`
-3. \`permits_contractors_summary\` / query / sample (paginate ≤50)
-4. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) — writes Supabase
-5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true)\`
+3. \`permits_contractors_summary\` / query / sample (paginate ≤50). Qualify with \`exclude_national_chains=true\`. Do **not** drop low-permit locals.
+4. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) and \`exclude_national_chains=true\` — writes Supabase
+5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
 
 ### Parcels
 1. \`parcels_summary\`
@@ -98,7 +98,7 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 | permits_contractors_* | No | Shovels GCs (local file) |
 | save_calling_list | No | Persist pull → Supabase for Cayden |
 | list_calling_lists | No | Saved lists by owner/name |
-| query_calling_list | No | Filter a saved list (phone/city/dial_status) |
+| query_calling_list | No | Filter a saved list (phone/city/dial_status/permit band) |
 | score_calling_list | No | Free owner vs office score |
 | match_texas_officers | No | Comptroller PIR officers |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
@@ -125,7 +125,7 @@ Cayden sets it from Claude with \`shovels_set_api_key\` (\`confirm=true\`). Neve
 Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` and quote **both** free (pages) and paid (companies).
 
 ## Calling lists (Cayden)
-\`save_calling_list\` writes \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter later with \`list_calling_lists\` / \`query_calling_list\`. Set \`owner=cayden\` so his lists are easy to find. Prefer \`has_phone=true\` for dialing.
+\`save_calling_list\` writes \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter later with \`list_calling_lists\` / \`query_calling_list\`. Set \`owner=cayden\` so his lists are easy to find. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
 
 ## Sync rules
 - No silent 50k truncation — full matching set, or fail loudly

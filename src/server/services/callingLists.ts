@@ -1,6 +1,11 @@
 import { getSupabase, hasSupabase, ingestSecret } from '../lib/supabase.js';
 import { supabaseTargetMeta } from '../lib/supabaseTarget.js';
-import { matchingShovelsContractors, type ContractorQuery } from './shovelsContractors.js';
+import {
+  matchingShovelsContractors,
+  nationalChainByPlaceId,
+  permitCountByPlaceId,
+  type ContractorQuery,
+} from './shovelsContractors.js';
 import { syncContractorsToSupabase } from './syncToSupabase.js';
 
 export interface CallingListMeta {
@@ -24,6 +29,12 @@ function defaultListName(q: ContractorQuery, owner: string): string {
   if (q.city) bits.push(q.city);
   if (q.has_phone === true) bits.push('has phone');
   if (q.has_email === true) bits.push('has email');
+  if (q.exclude_national_chains === true) bits.push('no national chains');
+  if (q.min_permit_count != null || q.max_permit_count != null) {
+    const min = q.min_permit_count ?? 0;
+    const max = q.max_permit_count ?? '∞';
+    bits.push(`permits ${min}–${max}`);
+  }
   if (q.q) bits.push(`“${q.q}”`);
   bits.push(`for ${owner}`);
   return bits.join(' · ');
@@ -88,7 +99,7 @@ export async function saveCallingList(opts: {
       row_count: Number(sync.counts.contractors_matched ?? matched),
     },
     assistant_instructions:
-      'List is in Supabase. Tell the user the list id + owner. Cayden (or anyone) filters it with list_calling_lists / query_calling_list (has_phone, city, q). Do not dump all rows into chat.',
+      'List is in Supabase. Tell the user the list id + owner. Filter later with query_calling_list (has_phone, city, exclude_national_chains). Do not dump all rows into chat.',
     supabase: supabaseTargetMeta(),
   };
 }
@@ -115,7 +126,7 @@ export async function listCallingLists(opts: {
     count: payload.count ?? payload.lists?.length ?? 0,
     lists: payload.lists ?? [],
     assistant_instructions:
-      'These are saved cold-calling lists in Supabase. Use query_calling_list with list_id or owner to page contacts (max 50/page). Prefer has_phone=true for dialing.',
+      'These are saved cold-calling lists in Supabase. Use query_calling_list with list_id or owner to page contacts (max 50/page). Prefer has_phone=true and exclude_national_chains=true. Do not drop low-permit locals.',
   };
 }
 
@@ -128,6 +139,9 @@ export async function queryCallingList(opts: {
   has_phone?: boolean;
   has_email?: boolean;
   dial_status?: string;
+  min_permit_count?: number;
+  max_permit_count?: number;
+  exclude_national_chains?: boolean;
   page?: number;
   page_size?: number;
 }): Promise<Record<string, unknown>> {
@@ -144,16 +158,40 @@ export async function queryCallingList(opts: {
     p_has_phone: opts.has_phone ?? null,
     p_has_email: opts.has_email ?? null,
     p_dial_status: opts.dial_status ?? null,
+    p_min_permit_count: opts.min_permit_count ?? null,
+    p_max_permit_count: opts.max_permit_count ?? null,
+    p_exclude_national_chains: opts.exclude_national_chains ?? null,
     p_page: opts.page ?? 1,
     p_page_size: opts.page_size ?? 25,
   });
   if (error) return { ok: false, error: error.message, rows: [], total: 0 };
   const payload = data as Record<string, unknown>;
+  const rawRows = Array.isArray(payload.rows) ? payload.rows : [];
+  const rows = rawRows
+    .map((row) => {
+      const r = row as Record<string, unknown>;
+      const placeId = typeof r.place_id === 'string' ? r.place_id : null;
+      const stored = typeof r.permit_count === 'number' ? r.permit_count : null;
+      const chain =
+        typeof r.national_chain === 'boolean' ? r.national_chain : nationalChainByPlaceId(placeId).national_chain;
+      return {
+        ...r,
+        permit_count: stored ?? permitCountByPlaceId(placeId),
+        national_chain: chain,
+      };
+    })
+    .filter((r) => (opts.exclude_national_chains === true ? r.national_chain !== true : true));
   return {
     ok: true,
     ...supabaseTargetMeta(),
     ...payload,
+    rows,
+    filters: {
+      min_permit_count: opts.min_permit_count ?? null,
+      max_permit_count: opts.max_permit_count ?? null,
+      exclude_national_chains: opts.exclude_national_chains === true,
+    },
     assistant_instructions:
-      'Paginate. Filter dial_status=owner_cell for Cayden. Summarize counts. Do not dump the full list into chat.',
+      'Paginate. Prefer exclude_national_chains=true. Do not drop low-permit locals. Filter dial_status=owner_cell after enrichment. Summarize counts. Do not dump the full list into chat.',
   };
 }

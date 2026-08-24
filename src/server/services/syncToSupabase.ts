@@ -7,6 +7,7 @@ import {
   parcelsToCsv,
   type ParcelQuery,
 } from './parcels.js';
+import { nationalChainHit } from '../lib/nationalChain.js';
 import {
   contractorsToCsv,
   loadShovelsContractors,
@@ -345,7 +346,9 @@ export async function syncContractorsToSupabase(
   });
   if (jobErr) return { ...base, error: jobErr };
 
-  const leads = items.map((c) => ({
+  const leads = items.map((c) => {
+    const chain = nationalChainHit(c);
+    return {
     place_id: `shovels:${c.id}`,
     name: c.business_name || c.name || '',
     owner_name: c.name || '',
@@ -356,14 +359,19 @@ export async function syncContractorsToSupabase(
     state: c.address_state || 'TX',
     zip: c.address_zip || '',
     rating: '',
-    reviews: '',
+    reviews: c.permit_count != null ? String(c.permit_count) : '',
+    permit_count: c.permit_count,
+    total_job_value: c.total_job_value,
+    national_chain: chain.national_chain ? 'true' : 'false',
+    national_chain_reason: chain.reason || '',
     category: c.primary_industry || 'commercial_contractor',
     main_category: 'shovels_commercial_contractor',
     maps_url: '',
     in_icp: c.email || c.primary_email ? 'true' : 'false',
     address: c.address_street || '',
     source_pipeline: 'permit_parcel_shovels',
-  }));
+  };
+  });
 
   const { deleted, inserted, error } = await replaceLeads(jobId, tags, leads);
   if (error) return { ...base, error };

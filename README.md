@@ -30,7 +30,7 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `shovels_estimate_credits` | How many Shovels API credits a filter would cost |
 | `permits_contractors_*` | Shovels GC summary/query/sample/export |
 | `save_calling_list` | Write a filtered pull to Supabase (`owner` e.g. `cayden`) |
-| `list_calling_lists` / `query_calling_list` | Find and filter saved lists (`dial_status=owner_cell`) |
+| `list_calling_lists` / `query_calling_list` | Find and filter saved lists (`exclude_national_chains`, `dial_status=owner_cell`) |
 | `score_calling_list` | Free owner vs office score |
 | `match_texas_officers` | Texas Comptroller PIR officers |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
@@ -54,10 +54,10 @@ Cayden can change the live key from Claude with `shovels_set_api_key` (`confirm=
 
 1. Optional: `shovels_set_api_key` if he wants to use his own Shovels key
 2. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
-3. Save: `save_calling_list` with `owner=cayden` and a name
+3. Save: `save_calling_list` with `owner=cayden` and `exclude_national_chains=true` (keeps local GCs of any permit volume)
 4. `score_calling_list` → `match_texas_officers` → `lookup_line_type` (confirm $ first)
 5. Leftovers: `owner_people_search` then `record_owner_cell` for wireless hits
-6. Dial: `query_calling_list(owner=cayden, dial_status=owner_cell)`
+6. Dial: `query_calling_list(owner=cayden, exclude_national_chains=true, dial_status=owner_cell)`
 
 ## Sync rules
 

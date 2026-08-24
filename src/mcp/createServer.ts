@@ -72,6 +72,25 @@ const ownerTypeEnum = z
   .enum(['individual', 'local_llc', 'institutional', 'municipal', 'unknown'])
   .optional();
 
+const minPermitCount = z
+  .number()
+  .int()
+  .min(0)
+  .optional()
+  .describe('Inclusive min Shovels permit_count. Optional — do not use this to drop small local GCs.');
+const maxPermitCount = z
+  .number()
+  .int()
+  .min(0)
+  .optional()
+  .describe('Inclusive max Shovels permit_count. Optional — do not use this to drop small local GCs.');
+const excludeNationalChains = z
+  .boolean()
+  .optional()
+  .describe(
+    'true = drop national GCs / public homebuilders / franchise trades (name match or 5,000+ employees). Keeps local shops of any permit volume.',
+  );
+
 async function healthPayload() {
   const target = supabaseTargetMeta();
   const shovelsKey = await getShovelsKeyStatus();
@@ -167,7 +186,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
     'permits_contractors_query',
     {
       title: 'Shovels commercial contractors — paginated query',
-      description: `Search/filter cached Shovels GC contacts. Max 50/page. Free.`,
+      description: `Search/filter cached Shovels GC contacts. Max 50/page. Free. Prefer exclude_national_chains=true. Do not drop low-permit locals.`,
       inputSchema: {
         q: z.string().optional(),
         place: placeEnum,
@@ -176,6 +195,9 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
         has_email: z.boolean().optional(),
         has_phone: z.boolean().optional(),
         has_website: z.boolean().optional(),
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        exclude_national_chains: excludeNationalChains,
         page: z.number().int().min(1).optional(),
         page_size: z.number().int().min(1).max(50).optional(),
       },
@@ -188,7 +210,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
     'permits_contractors_sample',
     {
       title: 'Shovels commercial contractors — random sample',
-      description: `≤20 random Shovels GC rows for QA. Free.`,
+      description: `≤20 random Shovels GC rows for QA. Free. Prefer exclude_national_chains=true.`,
       inputSchema: {
         n: z.number().int().min(1).max(20).optional(),
         q: z.string().optional(),
@@ -198,6 +220,9 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
         has_email: z.boolean().optional(),
         has_phone: z.boolean().optional(),
         has_website: z.boolean().optional(),
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        exclude_national_chains: excludeNationalChains,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -211,6 +236,9 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
           has_email: args.has_email,
           has_phone: args.has_phone,
           has_website: args.has_website,
+          min_permit_count: args.min_permit_count,
+          max_permit_count: args.max_permit_count,
+          exclude_national_chains: args.exclude_national_chains,
         }),
       ),
   );
@@ -234,7 +262,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
     'permits_contractors_export_csv',
     {
       title: 'Shovels commercial contractors — filtered CSV',
-      description: `CSV for matching Shovels GCs, cap 5000. Prefer sync_to_supabase for bulk.`,
+      description: `CSV for matching Shovels GCs, cap 5000. Prefer sync_to_supabase for bulk. Supports permit-count range.`,
       inputSchema: {
         q: z.string().optional(),
         place: placeEnum,
@@ -243,6 +271,9 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
         has_email: z.boolean().optional(),
         has_phone: z.boolean().optional(),
         has_website: z.boolean().optional(),
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        exclude_national_chains: excludeNationalChains,
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -474,7 +505,8 @@ NEXT: Show both numbers. Ask if they are on free or paid. Cached save_calling_li
       title: 'Save contractor pull to Supabase calling list',
       description: `WHEN TO USE: Persist a filtered Shovels GC pull so Cayden (or another caller) can filter it later via MCP.
 WHAT IT DOES: Writes matching contractors to public.scrape_leads and catalogs the list in permit_parcel.calling_lists (owner + name). 0 Shovels credits (local file). Returns counts + list id only.
-NEXT: Tell the user the list id and owner. They filter with list_calling_lists / query_calling_list.`,
+NEXT: Tell the user the list id and owner. They filter with list_calling_lists / query_calling_list.
+QUALIFY: exclude_national_chains=true. Do not drop low-permit locals. Optional min/max only if they name a band.`,
       inputSchema: {
         name: z.string().optional().describe('Human list name, e.g. "Cayden Fort Worth GCs with phone"'),
         owner: z
@@ -488,6 +520,9 @@ NEXT: Tell the user the list id and owner. They filter with list_calling_lists /
         has_email: z.boolean().optional(),
         has_phone: z.boolean().optional(),
         has_website: z.boolean().optional(),
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        exclude_national_chains: excludeNationalChains,
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
@@ -505,6 +540,9 @@ NEXT: Tell the user the list id and owner. They filter with list_calling_lists /
               has_email: args.has_email,
               has_phone: args.has_phone,
               has_website: args.has_website,
+              min_permit_count: args.min_permit_count,
+              max_permit_count: args.max_permit_count,
+              exclude_national_chains: args.exclude_national_chains,
             },
           }),
         );
@@ -542,6 +580,7 @@ WHAT IT DOES: Reads permit_parcel.calling_lists from Supabase. Filter by owner (
       title: 'Filter a saved calling list (cold calling)',
       description: `WHEN TO USE: Cayden wants dialable contacts from a saved list (has phone, city, name search).
 WHAT IT DOES: Pages rows from the Supabase-backed list (max 50/page). Free. Does not re-pull Shovels.
+QUALIFY: exclude_national_chains=true. Do not drop low-permit locals.
 RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into chat.`,
       inputSchema: {
         list_id: z.string().optional().describe('Calling list / scrape job id from save_calling_list'),
@@ -555,6 +594,9 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
           .enum(['owner_cell', 'owner_landline', 'company_line', 'needs_enrichment', 'skip'])
           .optional()
           .describe('After enrichment. owner_cell = Cayden can dial'),
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        exclude_national_chains: excludeNationalChains,
         page: z.number().int().min(1).optional(),
         page_size: z.number().int().min(1).max(50).optional(),
       },
@@ -812,6 +854,9 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           .string()
           .optional()
           .describe('When syncing contractors, who owns the calling list (e.g. cayden)'),
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        exclude_national_chains: excludeNationalChains,
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
@@ -829,6 +874,9 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           contractor_query: {
             place: args.place,
             q: args.dataset === 'parcels' ? undefined : args.q,
+            min_permit_count: args.min_permit_count,
+            max_permit_count: args.max_permit_count,
+            exclude_national_chains: args.exclude_national_chains,
           },
         });
         return jsonResult(result);
@@ -857,8 +905,8 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
 Request: "${request || 'Summarize the contractor file'}"
 1) If they want to change the Shovels key: shovels_set_api_key (confirm=true). Never echo the full key.
 2) If they ask cost/credits: shovels_estimate_credits (show free pages AND paid companies)
-3) permits_contractors_summary / query/sample as needed (paginate)
-4) save_calling_list with owner (e.g. cayden) so the pull lands in Supabase
+3) permits_contractors_summary / query/sample as needed (paginate). Use exclude_national_chains=true. Do not drop low-permit locals.
+4) save_calling_list with owner (e.g. cayden) and exclude_national_chains=true so the pull lands in Supabase
 5) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
 6) verify with select count(*) — never dump all rows into chat.`,
           },
@@ -914,7 +962,7 @@ Request: "${request || 'Cayden wants to set or change the Shovels API key'}"
 Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 1) If they asked Shovels credit cost first, call shovels_estimate_credits
 2) list_calling_lists (owner=cayden if named)
-3) query_calling_list with has_phone=true (paginate ≤50)
+3) query_calling_list with has_phone=true and exclude_national_chains=true (paginate ≤50). Do not drop low-permit locals.
 4) Never dump the full list into chat. Summarize counts and offer the next page.`,
           },
         },

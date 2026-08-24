@@ -38,6 +38,11 @@ callingListsRouter.post('/', async (req, res) => {
         has_email: req.body?.has_email,
         has_phone: req.body?.has_phone,
         has_website: req.body?.has_website,
+        min_permit_count:
+          req.body?.min_permit_count != null ? Number(req.body.min_permit_count) : undefined,
+        max_permit_count:
+          req.body?.max_permit_count != null ? Number(req.body.max_permit_count) : undefined,
+        exclude_national_chains: req.body?.exclude_national_chains,
       },
     });
     res.status(result.ok ? 200 : 400).json(result);
@@ -64,6 +69,13 @@ callingListsRouter.get('/query', async (req, res) => {
         has_phone: bool(req.query.has_phone),
         has_email: bool(req.query.has_email),
         dial_status: typeof req.query.dial_status === 'string' ? req.query.dial_status : undefined,
+        min_permit_count: req.query.min_permit_count
+          ? Number(req.query.min_permit_count)
+          : undefined,
+        max_permit_count: req.query.max_permit_count
+          ? Number(req.query.max_permit_count)
+          : undefined,
+        exclude_national_chains: bool(req.query.exclude_national_chains),
         page: req.query.page ? Number(req.query.page) : undefined,
         page_size: req.query.page_size ? Number(req.query.page_size) : undefined,
       }),

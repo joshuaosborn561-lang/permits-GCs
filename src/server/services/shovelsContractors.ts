@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { isNationalChain, nationalChainHit } from '../lib/nationalChain.js';
 
 export interface ShovelsContractor {
   id: string;
@@ -32,6 +33,12 @@ export interface ContractorQuery {
   has_email?: boolean;
   has_phone?: boolean;
   has_website?: boolean;
+  /** Inclusive lower bound on Shovels permit_count. Optional — do not use to drop small GCs. */
+  min_permit_count?: number;
+  /** Inclusive upper bound on Shovels permit_count. Optional. */
+  max_permit_count?: number;
+  /** Drop national GCs / public builders / franchise trades. Keeps local shops of any permit volume. */
+  exclude_national_chains?: boolean;
   /** 1-based page */
   page?: number;
   /** page size, default 25, max 50 */
@@ -227,6 +234,8 @@ function matches(c: ShovelsContractor, q: ContractorQuery): boolean {
   }
   if (q.has_website === true && !hasContact(c.website)) return false;
   if (q.has_website === false && hasContact(c.website)) return false;
+  if (!permitCountInRange(c.permit_count, q)) return false;
+  if (q.exclude_national_chains === true && isNationalChain(c)) return false;
   if (q.q) {
     const needle = q.q.trim().toLowerCase();
     if (!needle) return true;
@@ -250,8 +259,41 @@ function matches(c: ShovelsContractor, q: ContractorQuery): boolean {
   return true;
 }
 
+export function permitCountInRange(
+  count: number | null | undefined,
+  q: Pick<ContractorQuery, 'min_permit_count' | 'max_permit_count'>,
+): boolean {
+  const min = q.min_permit_count;
+  const max = q.max_permit_count;
+  if (min == null && max == null) return true;
+  if (count == null || !Number.isFinite(count)) return false;
+  if (min != null && count < min) return false;
+  if (max != null && count > max) return false;
+  return true;
+}
+
+export function shovelsIdFromPlaceId(placeId: string | null | undefined): string | null {
+  if (!placeId) return null;
+  return placeId.startsWith('shovels:') ? placeId.slice('shovels:'.length) : null;
+}
+
+export function permitCountByPlaceId(placeId: string | null | undefined): number | null {
+  const id = shovelsIdFromPlaceId(placeId);
+  if (!id) return null;
+  return getShovelsContractor(id)?.permit_count ?? null;
+}
+
+export function nationalChainByPlaceId(placeId: string | null | undefined) {
+  const id = shovelsIdFromPlaceId(placeId);
+  if (!id) return { national_chain: false, reason: null as string | null };
+  const row = getShovelsContractor(id);
+  return row ? nationalChainHit(row) : { national_chain: false, reason: null as string | null };
+}
+
 export function matchingShovelsContractors(q: ContractorQuery = {}): ShovelsContractor[] {
-  return loadShovelsContractors().filter((c) => matches(c, q));
+  const rows = loadShovelsContractors().filter((c) => matches(c, q));
+  if (q.min_permit_count == null && q.max_permit_count == null) return rows;
+  return rows.slice().sort((a, b) => (a.permit_count ?? 0) - (b.permit_count ?? 0));
 }
 
 export function countMatchingShovelsContractors(q: ContractorQuery = {}): number {
@@ -343,8 +385,27 @@ export function shovelsContractorsSummary(): Record<string, unknown> {
       neither: { n: neither, pct: all.length ? round4(neither / all.length) : 0 },
       website: { n: website, pct: all.length ? round4(website / all.length) : 0 },
     },
+    national_chains: nationalChainSummary(all),
     query_hint:
-      'Use permits_contractors_query (paginated, max 50/page) or permits_contractors_sample (≤20 random). Prefer sync_to_supabase for bulk. Do not dump all rows into chat.',
+      'Do not drop low-permit locals. Qualify with exclude_national_chains=true (known national GCs / public builders / franchise trades, or 5,000+ employees). Optional min/max permit_count if they name a band. Do not dump all rows into chat.',
+  };
+}
+
+function nationalChainSummary(all: ShovelsContractor[]) {
+  const chains = all.filter((c) => isNationalChain(c));
+  const locals = all.filter((c) => !isNationalChain(c));
+  const withPhone = (rows: ShovelsContractor[]) =>
+    rows.filter((c) => hasContact(c.phone) || hasContact(c.primary_phone)).length;
+  return {
+    excluded_when_flag_true: chains.length,
+    remaining: locals.length,
+    remaining_with_phone: withPhone(locals),
+    reasons: chains.reduce<Record<string, number>>((acc, c) => {
+      const reason = nationalChainHit(c).reason || 'unknown';
+      const key = reason.startsWith('employees:') ? 'employees_5000_plus' : 'known_name';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {}),
   };
 }
 
