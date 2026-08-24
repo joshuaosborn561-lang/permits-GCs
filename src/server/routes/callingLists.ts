@@ -8,6 +8,7 @@ import {
   scoreCallingList,
 } from '../services/enrichCallingList.js';
 import { enrichmentKeysStatus, setAppSetting } from '../lib/appSettings.js';
+import { importCallingListCsv } from '../services/importCallingList.js';
 
 export const callingListsRouter = Router();
 
@@ -48,6 +49,19 @@ callingListsRouter.post('/', async (req, res) => {
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
     res.status(500).json({ error: err instanceof Error ? err.message : 'save failed' });
+  }
+});
+
+callingListsRouter.post('/import-csv', async (req, res) => {
+  try {
+    const result = await importCallingListCsv({
+      csv: String(req.body?.csv ?? ''),
+      name: typeof req.body?.name === 'string' ? req.body.name : undefined,
+      owner: typeof req.body?.owner === 'string' ? req.body.owner : undefined,
+    });
+    res.status(result.ok ? 200 : 400).json(result);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : 'csv import failed' });
   }
 });
 
@@ -116,6 +130,8 @@ callingListsRouter.post('/score', async (req, res) => {
     const result = await scoreCallingList({
       list_id: String(req.body?.list_id ?? req.query.list_id ?? ''),
       limit: req.body?.limit ? Number(req.body.limit) : undefined,
+      offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
+      only_unscored: req.body?.only_unscored,
     });
     res.status(result.ok ? 200 : 400).json(result);
   } catch (err) {
@@ -128,6 +144,7 @@ callingListsRouter.post('/officers', async (req, res) => {
     const result = await matchTexasOfficers({
       list_id: String(req.body?.list_id ?? ''),
       limit: req.body?.limit ? Number(req.body.limit) : undefined,
+      offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
       only_unmatched: req.body?.only_unmatched,
     });
     res.status(result.ok ? 200 : 400).json(result);
@@ -142,6 +159,7 @@ callingListsRouter.post('/line-type', async (req, res) => {
       list_id: String(req.body?.list_id ?? ''),
       confirm: req.body?.confirm === true,
       limit: req.body?.limit ? Number(req.body.limit) : undefined,
+      offset: req.body?.offset != null ? Number(req.body.offset) : undefined,
       only_unknown: req.body?.only_unknown,
     });
     res.status(result.ok ? 200 : 400).json(result);

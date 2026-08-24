@@ -47,7 +47,7 @@ function baseMeta() {
   };
 }
 
-async function upsertJob(opts: {
+export async function upsertJob(opts: {
   id: string;
   prompt: string;
   tags: string[];
@@ -76,7 +76,7 @@ async function upsertJob(opts: {
   return error ? error.message : null;
 }
 
-async function replaceLeads(
+export async function replaceLeads(
   jobId: string,
   tags: string[],
   rows: Record<string, unknown>[],
@@ -122,7 +122,7 @@ async function replaceLeads(
   return { deleted, inserted };
 }
 
-async function upsertExport(jobId: string, filename: string, content: string) {
+export async function upsertExport(jobId: string, filename: string, content: string) {
   const { error } = await getSupabase().rpc('upsert_scrape_export', {
     p_secret: ingestSecret(),
     p_job_id: jobId,

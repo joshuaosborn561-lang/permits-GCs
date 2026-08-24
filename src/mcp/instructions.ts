@@ -57,11 +57,16 @@ This MCP is authless — anyone with the connector URL can set the key. Still ne
 
 ## Owner-cell enrichment (Cayden)
 Goal: dial **owner cells**, not office/main/license lines.
-1. \`save_calling_list\` then \`score_calling_list\` (free)
-2. \`match_texas_officers\` — official Comptroller PIR names + addresses (needs \`texas_cpa_api_key\`)
-3. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`
-4. Leftovers: \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
-5. \`query_calling_list(dial_status=owner_cell)\`
+1. \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (Houston/Harris / any external pull)
+2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
+3. \`match_texas_officers(only_unmatched=true, limit=50)\` until \`remaining_unmatched=0\`. A 22s budget stops early with \`has_more\`. Permanent Comptroller 400s are stored as \`officer_match=error\` and leave the retry queue.
+4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`
+5. Leftovers: \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
+6. \`query_calling_list(dial_status=owner_cell)\`
+
+The DFW Shovels cache is Dallas / Fort Worth / Rockwall only. For Harris County, import a CSV.
+
+Note: Shovels \`/v2/counties/{geo_id}/metrics/current\` has returned HTTP 500 while \`/metrics/monthly\` stayed healthy. Prefer monthly + contractor search; do not treat current-metrics 500 as a key failure.
 
 Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\` and \`texas_cpa_api_key\`. Never echo them.
 
@@ -79,7 +84,8 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 2. If they ask cost/credits → \`shovels_estimate_credits\`
 3. \`permits_contractors_summary\` / query / sample (paginate ≤50). Qualify with \`exclude_national_chains=true\`. Do **not** drop low-permit locals.
 4. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) and \`exclude_national_chains=true\` — writes Supabase
-5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
+5. Non-DFW: \`import_calling_list_csv\` with the Shovels CSV
+6. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
 
 ### Parcels
 1. \`parcels_summary\`
@@ -96,11 +102,12 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 | shovels_clear_api_key | No | Drop Claude override; fall back to env |
 | shovels_estimate_credits | Probe only | Live include_count; full pull ≈ pages @ 100 |
 | permits_contractors_* | No | Shovels GCs (local file) |
-| save_calling_list | No | Persist pull → Supabase for Cayden |
+| save_calling_list | No | Persist DFW cache pull → Supabase for Cayden |
+| import_calling_list_csv | No | Houston/Harris or any external contractor CSV |
 | list_calling_lists | No | Saved lists by owner/name |
 | query_calling_list | No | Filter a saved list (phone/city/dial_status/permit band) |
-| score_calling_list | No | Free owner vs office score |
-| match_texas_officers | No | Comptroller PIR officers |
+| score_calling_list | No | Free owner vs office score (resume via only_unscored) |
+| match_texas_officers | No | Comptroller PIR officers (resume via only_unmatched, limit 50) |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
 | owner_people_search | No | Google / people-search URLs |
 | record_owner_cell | No | Save a confirmed wireless |
@@ -125,7 +132,7 @@ Cayden sets it from Claude with \`shovels_set_api_key\` (\`confirm=true\`). Neve
 Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` and quote **both** free (pages) and paid (companies).
 
 ## Calling lists (Cayden)
-\`save_calling_list\` writes \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter later with \`list_calling_lists\` / \`query_calling_list\`. Set \`owner=cayden\` so his lists are easy to find. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
+\`save_calling_list\` writes the DFW cache. \`import_calling_list_csv\` writes Houston/Harris or any external contractor CSV. Both land in \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter with \`list_calling_lists\` / \`query_calling_list\`. Score with \`only_unscored=true\` until remaining is 0; officers with \`only_unmatched=true, limit=50\`. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
 
 ## Sync rules
 - No silent 50k truncation — full matching set, or fail loudly
@@ -147,6 +154,7 @@ export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 - Cayden changing the Shovels API key from Claude
 - Estimate Shovels API credits for a filter
 - Save / filter cold-calling lists in Supabase (Cayden or anyone)
+- Import a non-DFW contractor CSV (Houston/Harris)
 - Commercial parcels from Dallas / Tarrant / Collin appraisal districts
 - Operator rollup by mailing address (\`build_operators\`)
 

@@ -22,7 +22,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '8mb' }));
 
 app.get('/api/health', async (_req, res) => {
   const target = supabaseTargetMeta();

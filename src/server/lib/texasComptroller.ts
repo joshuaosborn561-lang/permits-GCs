@@ -46,6 +46,24 @@ function cleanName(name: string): string {
     .slice(0, 50);
 }
 
+export class TexasCpaError extends Error {
+  readonly status: number;
+  readonly kind: 'search' | 'detail';
+
+  constructor(kind: 'search' | 'detail', status: number, message: string) {
+    super(message);
+    this.name = 'TexasCpaError';
+    this.kind = kind;
+    this.status = status;
+  }
+
+  /** 4xx other than rate-limit: do not retry; leave the unmatched queue. */
+  get permanent(): boolean {
+    if (this.status === 429) return false;
+    return this.status >= 400 && this.status < 500;
+  }
+}
+
 async function readJson(url: string, key?: string) {
   const hdrs: HeadersInit = {
     Accept: 'application/json',
@@ -73,7 +91,11 @@ export async function searchFranchiseEntities(name: string): Promise<Array<{ tax
     }
   }
   if (!res.ok) {
-    throw new Error(`Texas CPA search ${res.status}: ${String(body?.message || res.statusText)}`);
+    throw new TexasCpaError(
+      'search',
+      res.status,
+      `Texas CPA search ${res.status}: ${String(body?.message || res.statusText)}`,
+    );
   }
   const data = (body?.data as Array<{ taxpayerId?: string; name?: string }> | undefined) ?? [];
   return data
@@ -91,7 +113,11 @@ export async function getFranchiseAccount(taxpayerId: string): Promise<Comptroll
   }
   if (res.status === 404) return null;
   if (!res.ok) {
-    throw new Error(`Texas CPA detail ${res.status}: ${String(body?.message || res.statusText)}`);
+    throw new TexasCpaError(
+      'detail',
+      res.status,
+      `Texas CPA detail ${res.status}: ${String(body?.message || res.statusText)}`,
+    );
   }
   const d = body?.data as {
     taxpayerId?: string;
@@ -146,14 +172,60 @@ function normPerson(s: string): string {
     .trim();
 }
 
+function personTokens(s: string): string[] {
+  return normPerson(s).split(' ').filter(Boolean);
+}
+
+function firstLast(s: string): { first: string; last: string } {
+  const tokens = personTokens(s);
+  const long = tokens.filter((t) => t.length > 1);
+  return {
+    first: tokens[0] || '',
+    last: long[long.length - 1] || tokens[tokens.length - 1] || '',
+  };
+}
+
+/** Edit distance. Exported for tests. */
+export function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i += 1) {
+    let diag = prev[0]!;
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const tmp = prev[j]!;
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      prev[j] = Math.min(prev[j]! + 1, prev[j - 1]! + 1, diag + cost);
+      diag = tmp;
+    }
+  }
+  return prev[b.length]!;
+}
+
+function fuzzyTokenMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen < 4) return false;
+  const dist = levenshtein(a, b);
+  if (maxLen >= 8) return dist <= 2;
+  return dist <= 1;
+}
+
 export function namesLooselyMatch(a: string, b: string): boolean {
   const left = normPerson(a);
   const right = normPerson(b);
   if (!left || !right) return false;
   if (left === right) return true;
-  const last = (s: string) => s.split(' ').filter(Boolean).slice(-1)[0] || '';
-  const first = (s: string) => s.split(' ').filter(Boolean)[0] || '';
-  return Boolean(last(left) && last(left) === last(right) && first(left)[0] === first(right)[0]);
+  const lf = firstLast(left);
+  const rf = firstLast(right);
+  if (lf.last && lf.last === rf.last && lf.first[0] && lf.first[0] === rf.first[0]) return true;
+  if (fuzzyTokenMatch(lf.first, rf.first) && fuzzyTokenMatch(lf.last, rf.last)) return true;
+  if (lf.first && lf.first === rf.first && fuzzyTokenMatch(lf.last, rf.last)) return true;
+  if (lf.last && lf.last === rf.last && fuzzyTokenMatch(lf.first, rf.first)) return true;
+  return false;
 }
 
 function companyKey(s: string): string {

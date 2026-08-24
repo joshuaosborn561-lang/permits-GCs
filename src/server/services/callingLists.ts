@@ -166,6 +166,15 @@ export async function queryCallingList(opts: {
   });
   if (error) return { ok: false, error: error.message, rows: [], total: 0 };
   const payload = data as Record<string, unknown>;
+  if (payload.ok === false) {
+    return {
+      ok: false,
+      error: typeof payload.error === 'string' ? payload.error : 'query_calling_list failed',
+      rows: [],
+      total: 0,
+      ...supabaseTargetMeta(),
+    };
+  }
   const rawRows = Array.isArray(payload.rows) ? payload.rows : [];
   const rows = rawRows
     .map((row) => {

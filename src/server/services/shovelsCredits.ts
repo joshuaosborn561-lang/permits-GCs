@@ -32,8 +32,9 @@ const GEO_ALIASES: Record<string, { kind: 'city' | 'county'; q: string; place: s
   fortworth: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
   tarrant: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
   tarrant_county: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
-  rockwall: { kind: 'county', q: 'Rockwall', place: 'Rockwall_County' },
-  rockwall_county: { kind: 'county', q: 'Rockwall', place: 'Rockwall_County' },
+  houston: { kind: 'city', q: 'Houston', place: 'Houston' },
+  harris: { kind: 'county', q: 'Harris', place: 'Harris' },
+  harris_county: { kind: 'county', q: 'Harris', place: 'Harris' },
 };
 
 export interface ShovelsCreditEstimateInput extends ContractorQuery {

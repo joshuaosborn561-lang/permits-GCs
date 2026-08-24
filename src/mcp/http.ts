@@ -169,6 +169,7 @@ export function mountMcpHttp(app: Express): void {
         'save_calling_list',
         'list_calling_lists',
         'query_calling_list',
+        'import_calling_list_csv',
         'parcels_summary',
         'parcels_query',
         'parcels_sample',

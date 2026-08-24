@@ -14,6 +14,7 @@ import {
   pickBestEntity,
   pickOwnerOfficer,
   searchFranchiseEntities,
+  TexasCpaError,
 } from '../lib/texasComptroller.js';
 import {
   estimateVeriphoneUsd,
@@ -83,17 +84,49 @@ function applyDial(row: EnrichmentRow): EnrichmentRow {
   return row;
 }
 
-async function fetchContacts(listId: string, limit: number): Promise<EnrichmentRow[]> {
+export interface FetchContactsOpts {
+  limit?: number;
+  offset?: number;
+  unscoredOnly?: boolean;
+  unmatchedOnly?: boolean;
+  unknownLineTypeOnly?: boolean;
+  leadId?: number;
+}
+
+export interface FetchContactsResult {
+  rows: EnrichmentRow[];
+  total: number;
+  offset: number;
+  limit: number;
+  remaining_unscored: number;
+  remaining_unmatched: number;
+  remaining_unknown_line_type: number;
+}
+
+async function fetchContacts(listId: string, opts: FetchContactsOpts = {}): Promise<FetchContactsResult> {
   if (!hasSupabase()) throw new Error('Supabase not configured');
   const { data, error } = await getSupabase().rpc('fetch_permit_parcel_calling_list_contacts', {
     p_secret: ingestSecret(),
     p_list_id: listId,
-    p_limit: limit,
+    p_limit: opts.limit ?? 500,
+    p_offset: opts.offset ?? 0,
+    p_unscored_only: opts.unscoredOnly === true,
+    p_unmatched_only: opts.unmatchedOnly === true,
+    p_unknown_line_type_only: opts.unknownLineTypeOnly === true,
+    p_lead_id: opts.leadId ?? null,
   });
   if (error) throw new Error(error.message);
-  const payload = data as { ok?: boolean; rows?: EnrichmentRow[]; error?: string };
+  const payload = data as FetchContactsResult & { ok?: boolean; error?: string };
   if (payload?.error) throw new Error(payload.error);
-  return (payload?.rows ?? []) as EnrichmentRow[];
+  return {
+    rows: (payload?.rows ?? []) as EnrichmentRow[],
+    total: Number(payload?.total ?? 0),
+    offset: Number(payload?.offset ?? opts.offset ?? 0),
+    limit: Number(payload?.limit ?? opts.limit ?? 0),
+    remaining_unscored: Number(payload?.remaining_unscored ?? 0),
+    remaining_unmatched: Number(payload?.remaining_unmatched ?? 0),
+    remaining_unknown_line_type: Number(payload?.remaining_unknown_line_type ?? 0),
+  };
 }
 
 async function persistRows(rows: EnrichmentRow[]): Promise<string | null> {
@@ -149,9 +182,17 @@ function sample(rows: EnrichmentRow[], n = 8) {
 export async function scoreCallingList(opts: {
   list_id: string;
   limit?: number;
+  offset?: number;
+  only_unscored?: boolean;
 }): Promise<Record<string, unknown>> {
   const listId = opts.list_id.trim();
-  const rows = await fetchContacts(listId, opts.limit ?? 500);
+  const onlyUnscored = opts.only_unscored !== false;
+  const fetched = await fetchContacts(listId, {
+    limit: opts.limit ?? 2000,
+    offset: opts.offset ?? 0,
+    unscoredOnly: onlyUnscored,
+  });
+  const rows = fetched.rows;
   const phoneCounts = new Map<string, number>();
   for (const r of rows) {
     const d = digits(r.phone || '');
@@ -178,22 +219,39 @@ export async function scoreCallingList(opts: {
     });
   });
   const persistError = await persistRows(scored);
+  const remaining = onlyUnscored
+    ? Math.max(0, fetched.remaining_unscored - scored.length)
+    : fetched.remaining_unscored;
   return {
     ok: !persistError,
     error: persistError,
     ...supabaseTargetMeta(),
     scored: scored.length,
+    list_total: fetched.total,
+    offset: fetched.offset,
+    remaining_unscored: remaining,
+    has_more: remaining > 0,
+    next_offset: onlyUnscored ? 0 : fetched.offset + scored.length,
     by_owner_score: countBy(scored, 'owner_score'),
     by_dial_status: countBy(scored, 'dial_status'),
     sample: sample(scored),
     assistant_instructions:
-      'Free score only. Next: match_texas_officers, then lookup_line_type (confirm + show $ estimate). Do not dump the list.',
+      remaining > 0
+        ? `Scored ${scored.length}; ${remaining} still unscored. Call score_calling_list again (only_unscored=true) to continue. Do not dump the list.`
+        : 'Free score only. Next: match_texas_officers in batches (limit 50, only_unmatched=true). Do not dump the list.',
   };
+}
+
+const OFFICER_BUDGET_MS = 22_000;
+
+function appendEvidence(row: EnrichmentRow, note: string) {
+  row.evidence = [row.evidence, note].filter(Boolean).join(' · ');
 }
 
 export async function matchTexasOfficers(opts: {
   list_id: string;
   limit?: number;
+  offset?: number;
   only_unmatched?: boolean;
 }): Promise<Record<string, unknown>> {
   await loadAppSettings();
@@ -203,16 +261,26 @@ export async function matchTexasOfficers(opts: {
       error: 'Texas officer source is unavailable.',
     };
   }
-  const rows = await fetchContacts(opts.list_id.trim(), opts.limit ?? 200);
-  const targets = rows.filter((r) => {
-    if (opts.only_unmatched !== false && r.officer_match) return false;
-    return Boolean(r.company_name || r.contact_name);
+  const onlyUnmatched = opts.only_unmatched !== false;
+  const fetched = await fetchContacts(opts.list_id.trim(), {
+    limit: opts.limit ?? 50,
+    offset: opts.offset ?? 0,
+    unmatchedOnly: onlyUnmatched,
   });
+  const targets = fetched.rows.filter((r) => Boolean(r.company_name || r.contact_name));
   let matched = 0;
   let different = 0;
   let none = 0;
   let errors = 0;
+  let timedOut = false;
+  const deadline = Date.now() + OFFICER_BUDGET_MS;
+  const processed: EnrichmentRow[] = [];
+
   for (const row of targets) {
+    if (Date.now() > deadline) {
+      timedOut = true;
+      break;
+    }
     try {
       const hits = await searchFranchiseEntities(row.company_name || '');
       const best = pickBestEntity(row.company_name || '', hits);
@@ -240,28 +308,44 @@ export async function matchTexasOfficers(opts: {
         }
       }
       applyDial(row);
-      await sleep(120);
+      processed.push(row);
+      await persistRows([row]);
+      await sleep(80);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : 'officer lookup failed';
+      const permanent = err instanceof TexasCpaError ? err.permanent : /Texas CPA \w+ 400\b/.test(msg);
+      appendEvidence(row, msg);
+      if (permanent) {
+        row.officer_match = 'error';
+        applyDial(row);
+        processed.push(row);
+        await persistRows([row]);
+      }
       errors += 1;
-      row.evidence = [row.evidence, err instanceof Error ? err.message : 'officer lookup failed']
-        .filter(Boolean)
-        .join(' · ');
     }
   }
-  const persistError = await persistRows(targets);
+  const remaining = onlyUnmatched
+    ? Math.max(0, fetched.remaining_unmatched - processed.length)
+    : fetched.remaining_unmatched;
   return {
-    ok: !persistError,
-    error: persistError,
+    ok: true,
     ...supabaseTargetMeta(),
-    processed: targets.length,
+    processed: processed.length,
+    attempted: targets.length,
     matched,
     different,
     none,
     errors,
+    timed_out: timedOut,
+    list_total: fetched.total,
+    remaining_unmatched: remaining,
+    has_more: remaining > 0,
+    next_offset: onlyUnmatched ? 0 : fetched.offset + processed.length,
     by_officer_match: { match: matched, different, none, errors },
-    sample: sample(targets),
-    assistant_instructions:
-      'Officer names are public PIR data. If match=different, Google the officer name (not the Shovels PM). Next lookup_line_type or owner_people_search.',
+    sample: sample(processed),
+    assistant_instructions: remaining
+      ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=50). Permanent CPA 400s are officer_match=error and will not retry. Do not dump the list.`
+      : 'Officer names are public PIR data. If match=different, Google the officer name (not the Shovels PM). Next lookup_line_type or owner_people_search.',
   };
 }
 
@@ -269,15 +353,17 @@ export async function lookupLineTypes(opts: {
   list_id: string;
   confirm?: boolean;
   limit?: number;
+  offset?: number;
   only_unknown?: boolean;
 }): Promise<Record<string, unknown>> {
   await loadAppSettings();
-  const rows = await fetchContacts(opts.list_id.trim(), opts.limit ?? 200);
-  const targets = rows.filter((r) => {
-    if (!digits(r.phone || '')) return false;
-    if (opts.only_unknown !== false && r.phone_line_type) return false;
-    return true;
+  const onlyUnknown = opts.only_unknown !== false;
+  const fetched = await fetchContacts(opts.list_id.trim(), {
+    limit: opts.limit ?? 200,
+    offset: opts.offset ?? 0,
+    unknownLineTypeOnly: onlyUnknown,
   });
+  const targets = fetched.rows.filter((r) => Boolean(digits(r.phone || '')));
   const estimate = estimateVeriphoneUsd(targets.length);
   if (opts.confirm !== true) {
     return {
@@ -285,6 +371,8 @@ export async function lookupLineTypes(opts: {
       needs_confirm: true,
       ...estimate,
       ...supabaseTargetMeta(),
+      remaining_unknown: fetched.remaining_unknown_line_type,
+      has_more: fetched.remaining_unknown_line_type > targets.length,
       error: `Would look up ${targets.length} numbers (~$${estimate.usd}). Set confirm=true to spend Veriphone credits.`,
     };
   }
@@ -313,18 +401,23 @@ export async function lookupLineTypes(opts: {
     }
   }
   const persistError = await persistRows(targets);
+  const remaining = Math.max(0, fetched.remaining_unknown_line_type - looked);
   return {
     ok: !persistError,
     error: persistError,
     ...supabaseTargetMeta(),
     looked_up: looked,
     errors,
+    remaining_unknown: remaining,
+    has_more: remaining > 0,
     spent: estimateVeriphoneUsd(looked),
     by_line_type: countBy(targets, 'phone_line_type'),
     by_dial_status: countBy(targets, 'dial_status'),
     sample: sample(targets),
     assistant_instructions:
-      'Show line-type counts and $ spent. owner_cell = mobile + owner identity. Leftovers go to owner_people_search.',
+      remaining > 0
+        ? `Looked up ${looked}; ${remaining} numbers still unknown. Re-run lookup_line_type(only_unknown=true) after confirming spend. Do not dump the list.`
+        : 'Show line-type counts and $ spent. owner_cell = mobile + owner identity. Leftovers go to owner_people_search.',
   };
 }
 
@@ -333,9 +426,9 @@ export async function ownerPeopleSearch(opts: {
   limit?: number;
   dial_status?: string;
 }): Promise<Record<string, unknown>> {
-  const rows = await fetchContacts(opts.list_id.trim(), 500);
+  const fetched = await fetchContacts(opts.list_id.trim(), { limit: 8000 });
   const want = opts.dial_status || 'needs_enrichment';
-  const leftovers = rows
+  const leftovers = fetched.rows
     .filter((r) => (r.dial_status || 'needs_enrichment') === want)
     .slice(0, opts.limit ?? 25);
   const packs = leftovers
@@ -382,8 +475,8 @@ export async function recordOwnerCell(opts: {
   source?: string;
   line_type?: string;
 }): Promise<Record<string, unknown>> {
-  const rows = await fetchContacts(opts.list_id.trim(), 2000);
-  const row = rows.find((r) => Number(r.lead_id) === Number(opts.lead_id));
+  const fetched = await fetchContacts(opts.list_id.trim(), { leadId: opts.lead_id, limit: 1 });
+  const row = fetched.rows.find((r) => Number(r.lead_id) === Number(opts.lead_id)) ?? fetched.rows[0];
   if (!row) return { ok: false, error: `Lead ${opts.lead_id} not found on list ${opts.list_id}` };
   row.owner_cell = opts.phone.trim();
   row.owner_cell_source = opts.source || 'people_search';

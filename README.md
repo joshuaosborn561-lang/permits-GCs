@@ -29,10 +29,11 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `shovels_clear_api_key` | Drop the Claude override and fall back to env |
 | `shovels_estimate_credits` | How many Shovels API credits a filter would cost |
 | `permits_contractors_*` | Shovels GC summary/query/sample/export |
-| `save_calling_list` | Write a filtered pull to Supabase (`owner` e.g. `cayden`) |
+| `save_calling_list` | Write a filtered DFW pull to Supabase (`owner` e.g. `cayden`) |
+| `import_calling_list_csv` | Import Houston/Harris or any external contractor CSV |
 | `list_calling_lists` / `query_calling_list` | Find and filter saved lists (`exclude_national_chains`, `dial_status=owner_cell`) |
-| `score_calling_list` | Free owner vs office score |
-| `match_texas_officers` | Texas Comptroller PIR officers |
+| `score_calling_list` | Free owner vs office score (`only_unscored`, offset, up to 8k) |
+| `match_texas_officers` | Texas Comptroller PIR officers (`only_unmatched`, limit 50, resume) |
 | `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
 | `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |
 | `set_enrichment_api_key` | Cayden pastes Veriphone / Texas CPA keys |
@@ -54,10 +55,14 @@ Cayden can change the live key from Claude with `shovels_set_api_key` (`confirm=
 
 1. Optional: `shovels_set_api_key` if he wants to use his own Shovels key
 2. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
-3. Save: `save_calling_list` with `owner=cayden` and `exclude_national_chains=true` (keeps local GCs of any permit volume)
-4. `score_calling_list` → `match_texas_officers` → `lookup_line_type` (confirm $ first)
+3. Save: `save_calling_list` with `owner=cayden` and `exclude_national_chains=true` (keeps local GCs of any permit volume). Non-DFW: `import_calling_list_csv`.
+4. `score_calling_list(only_unscored=true)` until `remaining_unscored=0` → `match_texas_officers(only_unmatched=true, limit=50)` until `remaining_unmatched=0` → `lookup_line_type` (confirm $ first)
 5. Leftovers: `owner_people_search` then `record_owner_cell` for wireless hits
 6. Dial: `query_calling_list(owner=cayden, exclude_national_chains=true, dial_status=owner_cell)`
+
+Apply `supabase/migrations/20260824_enrichment_pipeline_scale.sql` so `query_calling_list` works (the `matched` CTE bug) and resume filters exist.
+
+Shovels `/v2/counties/{geo_id}/metrics/current` has returned HTTP 500 while the rest of their API (including `/metrics/monthly`) stayed healthy. Treat that as a Shovels outage, not a key problem.
 
 ## Sync rules
 

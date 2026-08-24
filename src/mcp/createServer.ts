@@ -18,6 +18,7 @@ import {
   queryCallingList,
   saveCallingList,
 } from '../server/services/callingLists.js';
+import { importCallingListCsv } from '../server/services/importCallingList.js';
 import {
   lookupLineTypes,
   matchTexasOfficers,
@@ -62,10 +63,13 @@ function errorResult(message: string) {
   };
 }
 
-const placeEnum = z
-  .enum(['Dallas', 'Fort_Worth', 'Rockwall_County'])
+const placeFilter = z
+  .string()
+  .min(1)
   .optional()
-  .describe('Shovels geography tag');
+  .describe(
+    'Geography tag. The in-repo cache is Dallas | Fort_Worth | Rockwall_County. Houston/Harris and other markets: import_calling_list_csv (or live Shovels). Passing Houston on the cache returns 0 rows.',
+  );
 
 const countyEnum = z.enum(['Dallas', 'Tarrant', 'Collin']).optional();
 const ownerTypeEnum = z
@@ -111,7 +115,7 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score → match_texas_officers → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Credits: shovels_estimate_credits. Never echo API keys.',
+      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score (only_unscored) → match_texas_officers (limit 50, only_unmatched) → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Non-DFW: import_calling_list_csv. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -189,7 +193,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
       description: `Search/filter cached Shovels GC contacts. Max 50/page. Free. Prefer exclude_national_chains=true. Do not drop low-permit locals.`,
       inputSchema: {
         q: z.string().optional(),
-        place: placeEnum,
+        place: placeFilter,
         city: z.string().optional(),
         state: z.string().optional(),
         has_email: z.boolean().optional(),
@@ -214,7 +218,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
       inputSchema: {
         n: z.number().int().min(1).max(20).optional(),
         q: z.string().optional(),
-        place: placeEnum,
+        place: placeFilter,
         city: z.string().optional(),
         state: z.string().optional(),
         has_email: z.boolean().optional(),
@@ -265,7 +269,7 @@ RULE: Never dump all rows into chat; use query/sample/sync.`,
       description: `CSV for matching Shovels GCs, cap 5000. Prefer sync_to_supabase for bulk. Supports permit-count range.`,
       inputSchema: {
         q: z.string().optional(),
-        place: placeEnum,
+        place: placeFilter,
         city: z.string().optional(),
         state: z.string().optional(),
         has_email: z.boolean().optional(),
@@ -481,7 +485,7 @@ NEXT: Show both numbers. Ask if they are on free or paid. Cached save_calling_li
           .string()
           .optional()
           .describe('Comma list: Dallas, Tarrant, Fort_Worth, Rockwall. Default Dallas+Tarrant'),
-        place: placeEnum,
+        place: placeFilter,
         city: z.string().optional(),
         date_from: z.string().optional().describe('YYYY-MM-DD, default last 12 months'),
         date_to: z.string().optional().describe('YYYY-MM-DD'),
@@ -514,7 +518,7 @@ QUALIFY: exclude_national_chains=true. Do not drop low-permit locals. Optional m
           .optional()
           .describe('Who the list is for, e.g. "cayden". Used as the filter key later.'),
         q: z.string().optional(),
-        place: placeEnum,
+        place: placeFilter,
         city: z.string().optional(),
         state: z.string().optional(),
         has_email: z.boolean().optional(),
@@ -548,6 +552,29 @@ QUALIFY: exclude_national_chains=true. Do not drop low-permit locals. Optional m
         );
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'save_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'import_calling_list_csv',
+    {
+      title: 'Import an external CSV as a calling list',
+      description: `WHEN TO USE: Houston/Harris or any market not in the DFW Shovels cache; or a contractor CSV pulled from the Shovels API.
+WHAT IT DOES: Parses CSV (company/contact/phone/email/city/state/zip), writes scrape_leads + calling_lists. Cap 8,000 rows. 0 Shovels credits.
+NEXT: Return list id. Then score_calling_list / query_calling_list. Do not dump rows into chat.`,
+      inputSchema: {
+        csv: z.string().min(10).describe('Full CSV text including header row'),
+        name: z.string().optional().describe('Human list name, e.g. "Cayden Harris GCs"'),
+        owner: z.string().optional().describe('Who the list is for, e.g. cayden'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await importCallingListCsv(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'import_calling_list_csv failed');
       }
     },
   );
@@ -685,10 +712,15 @@ RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_
     {
       title: 'Score a calling list (free owner/office guess)',
       description: `WHEN TO USE: After save_calling_list, before any paid lookup.
-WHAT IT DOES: Flags owner-likely vs company-line from email/name/shared phone. $0. Persists enrichment. Returns counts only.`,
+WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true so repeats walk the rest of a 6k list. Limit up to 8,000. Returns remaining_unscored + has_more.`,
       inputSchema: {
         list_id: z.string().min(1),
-        limit: z.number().int().min(1).max(2000).optional(),
+        limit: z.number().int().min(1).max(8000).optional(),
+        offset: z.number().int().min(0).optional(),
+        only_unscored: z
+          .boolean()
+          .optional()
+          .describe('Default true. Re-run to score the next unscored batch.'),
       },
       annotations: { readOnlyHint: false, openWorldHint: false },
     },
@@ -706,11 +738,15 @@ WHAT IT DOES: Flags owner-likely vs company-line from email/name/shared phone. $
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Official Comptroller franchise search — officer name, title, home address. Free, no key required. Default cap 200.`,
+WHAT IT DOES: Comptroller franchise search. Default limit 50 (HTTP budget ~22s). only_unmatched=true skips match/none/different/error so re-runs advance. Permanent 400s marked officer_match=error. Fuzzy name match (1–2 char typos).`,
       inputSchema: {
         list_id: z.string().min(1),
-        limit: z.number().int().min(1).max(500).optional(),
-        only_unmatched: z.boolean().optional(),
+        limit: z.number().int().min(1).max(100).optional().describe('Default 50. Keep small; re-run.'),
+        offset: z.number().int().min(0).optional(),
+        only_unmatched: z
+          .boolean()
+          .optional()
+          .describe('Default true. Rows already matched/none/error are skipped.'),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
@@ -729,11 +765,12 @@ WHAT IT DOES: Official Comptroller franchise search — officer name, title, hom
       title: 'Veriphone line type (cell vs landline)',
       description: `WHEN TO USE: After scoring, to mark Shovels phones as mobile/landline/voip.
 COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
-RULES: Show the estimate. confirm=true to spend. Default cap 200. Never echo the API key.`,
+RULES: Show the estimate. confirm=true to spend. Default cap 200. only_unknown=true (default) resumes. Never echo the API key.`,
       inputSchema: {
         list_id: z.string().min(1),
         confirm: z.boolean().optional().describe('Must be true to spend credits'),
         limit: z.number().int().min(1).max(1000).optional(),
+        offset: z.number().int().min(0).optional(),
         only_unknown: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
@@ -844,7 +881,7 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
           .describe('Which dataset(s) to sync'),
         county: countyEnum.describe('Optional parcel county filter'),
         owner_type: ownerTypeEnum.describe('Optional parcel owner_type filter'),
-        place: placeEnum.describe('Optional Shovels place filter'),
+        place: placeFilter.describe('Optional Shovels place filter'),
         q: z.string().optional().describe('Optional text filter for the chosen dataset'),
         list_name: z
           .string()
@@ -988,11 +1025,11 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
             text: `Permit & Parcel MCP — owner-cell enrichment.
 Request: "${request || 'Get Cayden owner cells on his latest list'}"
 1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
-2) list_calling_lists(owner=cayden) then score_calling_list
-3) match_texas_officers
-4) lookup_line_type without confirm (show $), then confirm=true
+2) list_calling_lists(owner=cayden) then score_calling_list(only_unscored=true) until remaining_unscored=0
+3) match_texas_officers(only_unmatched=true, limit=50) until remaining_unmatched=0. Permanent CPA 400s are officer_match=error and will not retry.
+4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0
 5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
-6) query_calling_list(dial_status=owner_cell). Do not dump the list.`,
+6) query_calling_list(dial_status=owner_cell). Do not dump the list. Houston/Harris CSVs go through import_calling_list_csv first.`,
           },
         },
       ],
