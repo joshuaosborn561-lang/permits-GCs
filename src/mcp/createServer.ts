@@ -65,6 +65,7 @@ function healthPayload() {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
+    shovels_api_configured: Boolean(config.shovelsApiKey),
     shovels_contractors_loaded: loadShovelsContractors().length,
     parcels_loaded: loadParcels().length,
     when_to_use:
@@ -72,7 +73,7 @@ function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Shovels credits: shovels_estimate_credits (cached=0; live API=1 credit/record). Contractors: summary → estimate → query/sample → save_calling_list / sync_to_supabase. Cayden: list_calling_lists → query_calling_list (has_phone/city). Parcels: parcels_summary → parcels_query → sync_to_supabase → build_operators. Verify with select count(*).',
+      'Shovels credits: shovels_estimate_credits (live include_count; full pull ≈ pages at size=100 — last Dallas+Tarrant was ~65 credits). Contractors: summary → estimate → save_calling_list. Cayden: list_calling_lists → query_calling_list. Parcels → sync_to_supabase → build_operators.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -344,27 +345,30 @@ NEXT: sync_to_supabase(dataset=parcels) for full matching set.`,
     'shovels_estimate_credits',
     {
       title: 'Estimate Shovels API credits',
-      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost (Claude / "estimate credits" / "what would this cost on Shovels").
-WHAT IT DOES: Counts matching rows in the local DFW snapshot and returns two numbers: cached_query=0 credits, live_shovels_api=1 credit per record (paid Shovels rule). Does NOT call Shovels. Free.
-NEXT: Show both numbers. If they want the list, save_calling_list (writes Supabase, still 0 Shovels credits) then Cayden can query_calling_list.`,
+      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost.
+WHAT IT DOES: Calls Shovels include_count (1 cheap request per geo) and estimates a full pull as PAGE COUNT at size=100 — the way the last Dallas+Tarrant job billed (~65 pages, under 500 credits, NOT 1 credit per contractor). Default geos = Dallas city + Tarrant County.
+NEXT: Quote credits.estimate. Do not quote naive_per_record. Then save_calling_list if they want the cached file (0 more Shovels credits).`,
       inputSchema: {
-        q: z.string().optional(),
+        geos: z
+          .string()
+          .optional()
+          .describe('Comma list: Dallas, Tarrant, Fort_Worth, Rockwall. Default Dallas+Tarrant'),
         place: placeEnum,
         city: z.string().optional(),
+        date_from: z.string().optional().describe('YYYY-MM-DD, default last 12 months'),
+        date_to: z.string().optional().describe('YYYY-MM-DD'),
+        property_type: z.string().optional().describe("Default 'commercial'"),
+        page_size: z.number().int().min(1).max(100).optional().describe('Default 100 (last DFW job)'),
+        max_records: z.number().int().min(1).optional(),
+        q: z.string().optional(),
         state: z.string().optional(),
         has_email: z.boolean().optional(),
         has_phone: z.boolean().optional(),
         has_website: z.boolean().optional(),
-        max_records: z
-          .number()
-          .int()
-          .min(1)
-          .optional()
-          .describe('Cap the live-API credit estimate (1 credit per record)'),
       },
-      annotations: { readOnlyHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async (args) => jsonResult(estimateShovelsCredits(args)),
+    async (args) => jsonResult(await estimateShovelsCredits(args)),
   );
 
   server.registerTool(
@@ -568,7 +572,7 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
             type: 'text',
             text: `Permit & Parcel MCP — Shovels contractors.
 Request: "${request || 'Summarize the contractor file'}"
-1) If they ask cost/credits: shovels_estimate_credits (cached=0; live Shovels API=1 credit/record)
+1) If they ask cost/credits: shovels_estimate_credits (page-based; last Dallas+Tarrant ~65 credits)
 2) permits_contractors_summary / query/sample as needed (paginate)
 3) save_calling_list with owner (e.g. cayden) so the pull lands in Supabase
 4) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)

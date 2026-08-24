@@ -19,6 +19,8 @@ export const config = {
   supabaseAnonKey: env('SUPABASE_ANON_KEY'),
   supabaseIngestSecret: env('SUPABASE_INGEST_SECRET'),
   supabaseServiceRoleKey: env('SUPABASE_SERVICE_ROLE_KEY'),
+  shovelsApiKey: env('SHOVELS_API_KEY'),
+  shovelsBaseUrl: env('SHOVELS_BASE_URL', 'https://api.shovels.ai/v2'),
 };
 
 export type AppConfig = typeof config;

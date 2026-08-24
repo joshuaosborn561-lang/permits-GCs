@@ -44,12 +44,9 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - \`municipal\` → city/county/ISD/housing authority/etc. Different motion; segmentable, not "unknown"
 
 ## Shovels credits (always estimate when asked)
-Paid Shovels rule: **1 credit = 1 record returned**.
-This MCP reads a **local cached file** — \`shovels_estimate_credits\` reports:
-- \`credits.cached_query\` = **0** (what these tools actually spend)
-- \`credits.live_shovels_api\` = matching record count (what a live Shovels API pull would bill)
-
-If the user asks for an estimate, call \`shovels_estimate_credits\` and show both numbers. Do not invent credit math.
+Call \`shovels_estimate_credits\`. It probes Shovels \`include_count\` (cheap) and estimates a **full pull as page count at size=100**.
+The last Dallas + Tarrant commercial pull was **65 pages / under 500 credits** for ~6k contractors — **not** 1 credit per row.
+Quote \`credits.estimate\`. Never quote \`naive_per_record_do_not_use\`. Cached list tools still cost 0.
 
 ## Workflows
 
@@ -69,7 +66,7 @@ If the user asks for an estimate, call \`shovels_estimate_credits\` and show bot
 | Tool | Spends Shovels credits? | Purpose |
 |------|-------------------------|---------|
 | health | No | Readiness + supabase_project |
-| shovels_estimate_credits | No | Cached=0 vs live API=1/record |
+| shovels_estimate_credits | Probe only | Live include_count; full pull ≈ pages @ 100 |
 | permits_contractors_* | No | Shovels GCs (local file) |
 | save_calling_list | No | Persist pull → Supabase for Cayden |
 | list_calling_lists | No | Saved lists by owner/name |
@@ -89,7 +86,7 @@ export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
 - **Removed:** Propwire / LoopNet / Google owner cascade
 
 ## Shovels credits
-1 credit = 1 record on paid Shovels. Local cache queries cost 0. Always use \`shovels_estimate_credits\` when the user asks.
+Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` (page-based). Do not use 1-credit-per-contractor.
 
 ## Calling lists (Cayden)
 \`save_calling_list\` writes \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter later with \`list_calling_lists\` / \`query_calling_list\`. Set \`owner=cayden\` so his lists are easy to find. Prefer \`has_phone=true\` for dialing.
@@ -123,5 +120,5 @@ export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 - Bulk row dumps through chat — use save_calling_list / sync_to_supabase
 
 ## Money
-Parcels + cached Shovels + operators + calling-list writes are free (0 Shovels credits). A live Shovels API pull would cost 1 credit per record — \`shovels_estimate_credits\` reports that number without spending.
+Cached Shovels queries + calling-list writes are 0 credits. A live full pull costs about **1 credit per API page (size=100)** — Dallas+Tarrant was under 500 last time.
 `;

@@ -6,7 +6,7 @@ GitHub: https://github.com/joshuaosborn561-lang/permits-GCs
 SalesGlider MCP for public **permit + parcel** records — not a people-resolver:
 
 1. **Shovels commercial contractors** (~6,124 DFW GCs) — cached CSV
-2. **Shovels API credit estimates** — cached query = 0 credits; live API = 1 credit per record
+2. **Shovels API credit estimates** — live `include_count`; full pull ≈ pages at size=100
 3. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
 4. **Appraisal-district commercial parcels** — DCAD / TAD / CCAD bulk extracts
 5. **Operator rollup** — group shell LLCs by normalised tax-bill mailing address (`build_operators`)
@@ -37,7 +37,7 @@ Claude connector: `https://workspace-production-4702.up.railway.app/mcp` (authle
 
 ## Shovels credits
 
-Paid Shovels plans bill **1 credit per record returned**. These MCP tools read the **local snapshot** and spend **0** credits. `shovels_estimate_credits` always returns both numbers so you can ask Claude “what would this cost?” before saving a list.
+`shovels_estimate_credits` calls Shovels `include_count` (one cheap request per city/county) and estimates a full pull as **page count at size=100**. That matches the last Dallas + Tarrant commercial job: **65 pages, well under 500 credits**, not 1 credit per contractor. Set `SHOVELS_API_KEY` for a live probe; without it the tool uses that last job’s page counts.
 
 ## Calling lists (Cayden)
 
@@ -77,6 +77,7 @@ Normalized commercial CSVs (refresh annually):
 SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_INGEST_SECRET=
+SHOVELS_API_KEY=
 ```
 
 ## Run

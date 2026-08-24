@@ -7,6 +7,7 @@
         "SUPABASE_URL": "https://kemvxzhcxvynmoutwdrh.supabase.co",
         "SUPABASE_ANON_KEY": "",
         "SUPABASE_INGEST_SECRET": "",
+        "SHOVELS_API_KEY": "",
         "DEMO_MODE": "false"
       }
     }

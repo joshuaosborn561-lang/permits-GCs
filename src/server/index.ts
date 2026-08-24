@@ -31,6 +31,7 @@ app.get('/api/health', async (_req, res) => {
     supabase_project: target.supabase_project,
     supabase_schema: target.supabase_schema ?? SCHEMA,
     supabase_url: target.supabase_url,
+    shovelsApiConfigured: Boolean(config.shovelsApiKey),
     shovelsContractorsLoaded: loadShovelsContractors().length,
     parcelsLoaded: loadParcels().length,
     parcels: parcelsSummary(),
