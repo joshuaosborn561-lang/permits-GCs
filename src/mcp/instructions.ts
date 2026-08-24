@@ -55,6 +55,16 @@ Cayden can change the live key from Claude — no Railway env edit needed.
 
 This MCP is authless — anyone with the connector URL can set the key. Still never echo it.
 
+## Owner-cell enrichment (Cayden)
+Goal: dial **owner cells**, not office/main/license lines.
+1. \`save_calling_list\` then \`score_calling_list\` (free)
+2. \`match_texas_officers\` — official Comptroller PIR names + addresses (needs \`texas_cpa_api_key\`)
+3. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`
+4. Leftovers: \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
+5. \`query_calling_list(dial_status=owner_cell)\`
+
+Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\` and \`texas_cpa_api_key\`. Never echo them.
+
 ## Shovels credits (always estimate when asked)
 Call \`shovels_estimate_credits\` and show **both** meters:
 - **Free / trial:** 1 credit ≈ 1 API page. Last Dallas+Tarrant was ~65 pages / under 500.
@@ -88,7 +98,12 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 | permits_contractors_* | No | Shovels GCs (local file) |
 | save_calling_list | No | Persist pull → Supabase for Cayden |
 | list_calling_lists | No | Saved lists by owner/name |
-| query_calling_list | No | Filter a saved list (phone/city/q) |
+| query_calling_list | No | Filter a saved list (phone/city/dial_status) |
+| score_calling_list | No | Free owner vs office score |
+| match_texas_officers | No | Comptroller PIR officers |
+| lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
+| owner_people_search | No | Google / people-search URLs |
+| record_owner_cell | No | Save a confirmed wireless |
 | parcels_* | No | CAD parcels |
 | build_operators | No | Mailing-address operator rollup |
 | sync_to_supabase | No | S2S sync; contractor syncs also catalog a calling list |

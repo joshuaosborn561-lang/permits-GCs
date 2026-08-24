@@ -30,7 +30,12 @@ This service writes to project **`kemvxzhcxvynmoutwdrh`**, schema **`permit_parc
 | `shovels_estimate_credits` | How many Shovels API credits a filter would cost |
 | `permits_contractors_*` | Shovels GC summary/query/sample/export |
 | `save_calling_list` | Write a filtered pull to Supabase (`owner` e.g. `cayden`) |
-| `list_calling_lists` / `query_calling_list` | Find and filter saved cold-calling lists |
+| `list_calling_lists` / `query_calling_list` | Find and filter saved lists (`dial_status=owner_cell`) |
+| `score_calling_list` | Free owner vs office score |
+| `match_texas_officers` | Texas Comptroller PIR officers |
+| `lookup_line_type` | Veriphone Standard (~$2.40/1k) cell vs landline |
+| `owner_people_search` / `record_owner_cell` | Google + free people-search leftovers |
+| `set_enrichment_api_key` | Cayden pastes Veriphone / Texas CPA keys |
 | `parcels_*` | CAD parcel summary/query/sample/export |
 | `build_operators` | Mailing-address operator rollup → `permit_parcel.operators` (counts only) |
 | `sync_to_supabase` | Full matching-set S2S sync — **counts only**; contractor syncs also catalog a calling list |
@@ -50,7 +55,9 @@ Cayden can change the live key from Claude with `shovels_set_api_key` (`confirm=
 1. Optional: `shovels_set_api_key` if he wants to use his own Shovels key
 2. Estimate (optional): `shovels_estimate_credits` with place/city/`has_phone`
 3. Save: `save_calling_list` with `owner=cayden` and a name
-4. Later: `list_calling_lists(owner=cayden)` → `query_calling_list(has_phone=true)`
+4. `score_calling_list` → `match_texas_officers` → `lookup_line_type` (confirm $ first)
+5. Leftovers: `owner_people_search` then `record_owner_cell` for wireless hits
+6. Dial: `query_calling_list(owner=cayden, dial_status=owner_cell)`
 
 ## Sync rules
 
@@ -85,6 +92,8 @@ SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_INGEST_SECRET=
 SHOVELS_API_KEY=   # optional fallback; Cayden can set the live key from Claude
+VERIPHONE_API_KEY= # or paste via set_enrichment_api_key
+TEXAS_CPA_API_KEY= # Comptroller public API; or paste via Claude
 ```
 
 ## Run

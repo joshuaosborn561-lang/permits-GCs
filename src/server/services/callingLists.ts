@@ -127,6 +127,7 @@ export async function queryCallingList(opts: {
   state?: string;
   has_phone?: boolean;
   has_email?: boolean;
+  dial_status?: string;
   page?: number;
   page_size?: number;
 }): Promise<Record<string, unknown>> {
@@ -142,6 +143,7 @@ export async function queryCallingList(opts: {
     p_state: opts.state ?? null,
     p_has_phone: opts.has_phone ?? null,
     p_has_email: opts.has_email ?? null,
+    p_dial_status: opts.dial_status ?? null,
     p_page: opts.page ?? 1,
     p_page_size: opts.page_size ?? 25,
   });
@@ -152,6 +154,6 @@ export async function queryCallingList(opts: {
     ...supabaseTargetMeta(),
     ...payload,
     assistant_instructions:
-      'Paginate. Summarize counts (with phone / with email). Do not reconstruct the full list in chat — offer another page or CSV via the scrape job if needed.',
+      'Paginate. Filter dial_status=owner_cell for Cayden. Summarize counts. Do not dump the full list into chat.',
   };
 }

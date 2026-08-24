@@ -2,6 +2,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { config } from '../server/config.js';
 import {
+  clearAppSetting,
+  enrichmentKeysStatus,
+  setAppSetting,
+} from '../server/lib/appSettings.js';
+import {
   clearShovelsApiKey,
   getShovelsKeyStatus,
   setShovelsApiKey,
@@ -13,6 +18,13 @@ import {
   queryCallingList,
   saveCallingList,
 } from '../server/services/callingLists.js';
+import {
+  lookupLineTypes,
+  matchTexasOfficers,
+  ownerPeopleSearch,
+  recordOwnerCell,
+  scoreCallingList,
+} from '../server/services/enrichCallingList.js';
 import { buildOperators } from '../server/services/operators.js';
 import {
   loadParcels,
@@ -80,7 +92,7 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Key: shovels_api_key_status / shovels_set_api_key (Cayden). Credits: shovels_estimate_credits (show free pages AND paid companies). Contractors: summary → estimate → save_calling_list. Cayden: list_calling_lists → query_calling_list. Parcels → sync_to_supabase → build_operators.',
+      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score → match_texas_officers → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Credits: shovels_estimate_credits. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -539,6 +551,10 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
         state: z.string().optional(),
         has_phone: z.boolean().optional().describe('true = dialable rows only'),
         has_email: z.boolean().optional(),
+        dial_status: z
+          .enum(['owner_cell', 'owner_landline', 'company_line', 'needs_enrichment', 'skip'])
+          .optional()
+          .describe('After enrichment. owner_cell = Cayden can dial'),
         page: z.number().int().min(1).optional(),
         page_size: z.number().int().min(1).max(50).optional(),
       },
@@ -549,6 +565,188 @@ RULE: Paginate. Summarize fill (phone/email). Do not dump the whole list into ch
         return jsonResult(await queryCallingList(args));
       } catch (err) {
         return errorResult(err instanceof Error ? err.message : 'query_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'enrichment_keys_status',
+    {
+      title: 'Enrichment API keys — status (masked)',
+      description: `WHEN TO USE: Before officer match or line-type lookup. Shows whether Veriphone + Texas Comptroller + Shovels keys are set. Never the full keys.`,
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => jsonResult(await enrichmentKeysStatus()),
+  );
+
+  server.registerTool(
+    'set_enrichment_api_key',
+    {
+      title: 'Set Veriphone or Texas Comptroller API key',
+      description: `WHEN TO USE: Cayden pastes a Veriphone or Texas CPA API key from Claude.
+RULES: confirm=true. Never echo the full key. key is veriphone_api_key or texas_cpa_api_key (or shovels_api_key).`,
+      inputSchema: {
+        key: z
+          .enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key'])
+          .describe('Which key to set'),
+        api_key: z.string().min(1).describe('The secret. Do not echo this back.'),
+        confirm: z.boolean().describe('Must be true'),
+        set_by: z.string().optional(),
+        persist: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) {
+        return errorResult('Set confirm=true after Cayden agrees to save the key. Do not echo it.');
+      }
+      try {
+        return jsonResult(
+          await setAppSetting({
+            key: args.key,
+            api_key: args.api_key,
+            set_by: args.set_by,
+            persist: args.persist,
+          }),
+        );
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'set_enrichment_api_key failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'clear_enrichment_api_key',
+    {
+      title: 'Clear a Claude-set enrichment API key',
+      description: 'Drops the Claude override for Veriphone / Texas CPA / Shovels. confirm=true.',
+      inputSchema: {
+        key: z.enum(['veriphone_api_key', 'texas_cpa_api_key', 'shovels_api_key']),
+        confirm: z.boolean(),
+        set_by: z.string().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: true },
+    },
+    async (args) => {
+      if (args.confirm !== true) return errorResult('Set confirm=true to clear the key.');
+      try {
+        return jsonResult(await clearAppSetting({ key: args.key, set_by: args.set_by }));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'clear failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'score_calling_list',
+    {
+      title: 'Score a calling list (free owner/office guess)',
+      description: `WHEN TO USE: After save_calling_list, before any paid lookup.
+WHAT IT DOES: Flags owner-likely vs company-line from email/name/shared phone. $0. Persists enrichment. Returns counts only.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(2000).optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await scoreCallingList(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'score_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'match_texas_officers',
+    {
+      title: 'Match Texas Comptroller officers (free PIR)',
+      description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
+WHAT IT DOES: Official Comptroller API — officer name, title, address. Free with TEXAS_CPA_API_KEY. Default cap 200.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(500).optional(),
+        only_unmatched: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await matchTexasOfficers(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'match_texas_officers failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'lookup_line_type',
+    {
+      title: 'Veriphone line type (cell vs landline)',
+      description: `WHEN TO USE: After scoring, to mark Shovels phones as mobile/landline/voip.
+COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
+RULES: Show the estimate. confirm=true to spend. Default cap 200. Never echo the API key.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        confirm: z.boolean().optional().describe('Must be true to spend credits'),
+        limit: z.number().int().min(1).max(1000).optional(),
+        only_unknown: z.boolean().optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await lookupLineTypes(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'lookup_line_type failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'owner_people_search',
+    {
+      title: 'Google / free people-search URLs for leftover owners',
+      description: `WHEN TO USE: Rows still needs_enrichment after officers + line type.
+WHAT IT DOES: Builds Google + FastPeopleSearch + TruePeopleSearch URLs from the officer name + city/zip. Does not scrape. Then record_owner_cell.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        limit: z.number().int().min(1).max(50).optional().describe('Default 25 packs'),
+        dial_status: z.string().optional().describe('Default needs_enrichment'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await ownerPeopleSearch(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'owner_people_search failed');
+      }
+    },
+  );
+
+  server.registerTool(
+    'record_owner_cell',
+    {
+      title: 'Save a confirmed owner cell from people search',
+      description: `WHEN TO USE: After Cayden or Claude finds a wireless number on FastPeopleSearch/TruePeopleSearch that matches the officer address.
+WHAT IT DOES: Sets owner_cell + dial_status=owner_cell. Do not save landlines or relatives.`,
+      inputSchema: {
+        list_id: z.string().min(1),
+        lead_id: z.number().int(),
+        phone: z.string().min(7),
+        source: z.string().optional().describe('e.g. fastpeoplesearch'),
+        line_type: z.enum(['mobile', 'landline', 'voip', 'unknown']).optional(),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await recordOwnerCell(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'record_owner_cell failed');
       }
     },
   );
@@ -718,6 +916,35 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 2) list_calling_lists (owner=cayden if named)
 3) query_calling_list with has_phone=true (paginate ≤50)
 4) Never dump the full list into chat. Summarize counts and offer the next page.`,
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'pp_enrich_owner_cells',
+    {
+      title: 'Enrich a calling list to owner cells',
+      description: 'Score, Comptroller officers, Veriphone line type, then people-search leftovers.',
+      argsSchema: {
+        request: z.string().optional(),
+      },
+    },
+    async ({ request }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Permit & Parcel MCP — owner-cell enrichment.
+Request: "${request || 'Get Cayden owner cells on his latest list'}"
+1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
+2) list_calling_lists(owner=cayden) then score_calling_list
+3) match_texas_officers
+4) lookup_line_type without confirm (show $), then confirm=true
+5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
+6) query_calling_list(dial_status=owner_cell). Do not dump the list.`,
           },
         },
       ],

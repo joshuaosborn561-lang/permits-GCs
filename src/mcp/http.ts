@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { enrichmentKeysStatus } from '../server/lib/appSettings.js';
 import { getShovelsKeyStatus } from '../server/lib/shovelsKey.js';
 import { supabaseTargetMeta } from '../server/lib/supabaseTarget.js';
 import { createPermitParcelMcpServer } from './createServer.js';
@@ -129,6 +130,7 @@ export function mountMcpHttp(app: Express): void {
   app.get('/mcp/health', async (_req, res) => {
     const target = supabaseTargetMeta();
     const shovelsKey = await getShovelsKeyStatus();
+    const enrichKeys = await enrichmentKeysStatus();
     res.json({
       ok: true,
       product: 'Permit & Parcel MCP',
@@ -142,11 +144,22 @@ export function mountMcpHttp(app: Express): void {
       supabase_project: target.supabase_project,
       supabase_schema: target.supabase_schema,
       shovels_api_key: shovelsKey,
+      enrichment_keys: {
+        veriphone: enrichKeys.veriphone_api_key,
+        texas_cpa: enrichKeys.texas_cpa_api_key,
+      },
       tools: [
         'health',
         'shovels_api_key_status',
         'shovels_set_api_key',
         'shovels_clear_api_key',
+        'enrichment_keys_status',
+        'set_enrichment_api_key',
+        'score_calling_list',
+        'match_texas_officers',
+        'lookup_line_type',
+        'owner_people_search',
+        'record_owner_cell',
         'permits_contractors_summary',
         'permits_contractors_query',
         'permits_contractors_sample',
@@ -167,6 +180,7 @@ export function mountMcpHttp(app: Express): void {
         'pp_query_contractors',
         'pp_set_shovels_key',
         'pp_filter_calling_list',
+        'pp_enrich_owner_cells',
         'pp_query_parcels',
       ],
       resources: ['permit-parcel://guide', 'permit-parcel://when-to-use'],

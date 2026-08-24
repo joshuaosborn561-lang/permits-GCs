@@ -76,10 +76,10 @@ export default function App() {
       <section className="mcp">
         <h2>MCP</h2>
         <p>
-          Connect Claude to <code>/mcp</code> (authless). Cayden can set the Shovels
-          key with <code>shovels_set_api_key</code>, ask for a credit estimate, then{' '}
-          <code>save_calling_list</code>. Prefer <code>select count(*)</code> over row
-          dumps. Never echo the full API key.
+          Connect Claude to <code>/mcp</code> (authless). Cayden can set API keys in
+          chat, score a list, match Texas officers, check cell vs landline, then dial{' '}
+          <code>owner_cell</code> rows. Prefer <code>select count(*)</code> over row
+          dumps. Never echo full API keys.
         </p>
       </section>
     </div>

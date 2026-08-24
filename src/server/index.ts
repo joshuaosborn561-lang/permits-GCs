@@ -6,7 +6,8 @@ import { mountMcpHttp } from '../mcp/http.js';
 import { config } from './config.js';
 import { hasSupabase, SCHEMA } from './lib/supabase.js';
 import { supabaseTargetMeta } from './lib/supabaseTarget.js';
-import { getShovelsKeyStatus, loadPersistedShovelsKey } from './lib/shovelsKey.js';
+import { enrichmentKeysStatus, loadAppSettings } from './lib/appSettings.js';
+import { getShovelsKeyStatus } from './lib/shovelsKey.js';
 import { callingListsRouter } from './routes/callingLists.js';
 import { parcelsRouter } from './routes/parcels.js';
 import { shovelsApiKeyRouter } from './routes/shovelsApiKey.js';
@@ -36,6 +37,7 @@ app.get('/api/health', async (_req, res) => {
     supabase_url: target.supabase_url,
     shovelsApiConfigured: shovelsKey.configured,
     shovels_api_key: shovelsKey,
+    enrichment_keys: await enrichmentKeysStatus(),
     shovelsContractorsLoaded: loadShovelsContractors().length,
     parcelsLoaded: loadParcels().length,
     parcels: parcelsSummary(),
@@ -123,10 +125,10 @@ app.use((req, res, next) => {
 });
 
 app.listen(config.port, () => {
-  void loadPersistedShovelsKey().then(() =>
-    getShovelsKeyStatus().then((key) => {
+  void loadAppSettings().then(() =>
+    enrichmentKeysStatus().then((keys) => {
       console.log(
-        `Shovels key: ${key.configured ? `${key.source} ${key.masked}` : 'unset (Cayden can set via shovels_set_api_key)'}`,
+        `Keys: shovels=${keys.shovels_api_key.configured ? keys.shovels_api_key.masked : 'unset'} veriphone=${keys.veriphone_api_key.configured ? keys.veriphone_api_key.masked : 'unset'} cpa=${keys.texas_cpa_api_key.configured ? keys.texas_cpa_api_key.masked : 'unset'}`,
       );
     }),
   );

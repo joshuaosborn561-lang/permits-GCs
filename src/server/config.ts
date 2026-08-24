@@ -21,6 +21,8 @@ export const config = {
   supabaseServiceRoleKey: env('SUPABASE_SERVICE_ROLE_KEY'),
   shovelsApiKey: env('SHOVELS_API_KEY'),
   shovelsBaseUrl: env('SHOVELS_BASE_URL', 'https://api.shovels.ai/v2'),
+  veriphoneApiKey: env('VERIPHONE_API_KEY'),
+  texasCpaApiKey: env('TEXAS_CPA_API_KEY'),
 };
 
 export type AppConfig = typeof config;
