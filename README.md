@@ -11,7 +11,7 @@ SalesGlider MCP for public **permit + parcel** records — not a people-resolver
 4. **Appraisal-district commercial parcels** — DCAD / TAD / CCAD bulk extracts
 5. **Operator rollup** — group shell LLCs by normalised tax-bill mailing address (`build_operators`)
 
-The Propwire → LoopNet → Google owner cascade and **OpenSOS** were **removed**.
+The Propwire → LoopNet → Google owner cascade was **removed**.
 
 ## Supabase target
 
@@ -91,7 +91,7 @@ npm start
 ## Owner-type routing
 
 - `individual` — owner is decision maker
-- `local_llc` — operators + free Comptroller PIR (no OpenSOS)
+- `local_llc` — operators + free Comptroller PIR
 - `institutional` — drop from private-operator outreach
 - `municipal` — city / county / ISD / housing authority / etc. (segmentable)
 - `unknown` — residual

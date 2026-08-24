@@ -10,7 +10,6 @@ You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub 
 5. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
 
 The old Propwire → LoopNet → Google property-owner cascade was **removed**. Do not offer it.
-**OpenSOS is removed (legacy).** Do not offer OpenSOS / SOSDirect lookups.
 
 This server is **not** a people-resolver. It surfaces public permit + parcel records. Prefer the name Permit & Parcel over "Property Owners".
 
@@ -34,13 +33,13 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 - Google Maps local-business scrapes
 - Propwire / LoopNet / residential rolls
 - Institutional owners (REIT/fund/trust) — classify and **drop**
-- OpenSOS / SOSDirect / paid SOS unmasking (removed)
+- Paid SOS / officer-unmasking lookups
 - Smartlead sends / CRM writes
 
 ## Owner-type routing
 \`owner_type\` on parcels:
 - \`individual\` → owner is the decision maker
-- \`local_llc\` → use \`build_operators\` + free Texas Comptroller PIR (no OpenSOS)
+- \`local_llc\` → use \`build_operators\` + free Texas Comptroller PIR
 - \`institutional\` → drop from private-operator outreach
 - \`municipal\` → city/county/ISD/housing authority/etc. Different motion; segmentable, not "unknown"
 
@@ -87,7 +86,7 @@ export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
 - **Server:** \`permits-gcs\`
 - **Jobs:** Shovels commercial GCs + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
 - **Supabase:** project reported in \`health\` / sync responses (expect \`kemvxzhcxvynmoutwdrh\` / schema \`permit_parcel\`)
-- **Removed:** Propwire / LoopNet / Google owner cascade; OpenSOS
+- **Removed:** Propwire / LoopNet / Google owner cascade
 
 ## Shovels credits
 1 credit = 1 record on paid Shovels. Local cache queries cost 0. Always use \`shovels_estimate_credits\` when the user asks.
@@ -119,7 +118,6 @@ export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 
 ## No
 - Propwire/LoopNet cascade (removed)
-- OpenSOS (removed)
 - Maps local businesses
 - Institutional fund/REIT owners (drop them)
 - Bulk row dumps through chat — use save_calling_list / sync_to_supabase

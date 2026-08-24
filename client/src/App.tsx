@@ -31,7 +31,7 @@ export default function App() {
         <h1>Permit &amp; Parcel</h1>
         <p className="lede">
           Shovels commercial GCs · credit estimates · Supabase calling lists · DCAD / TAD / CCAD
-          parcels. Propwire cascade and OpenSOS removed.
+          parcels. Propwire cascade removed.
         </p>
       </header>
 

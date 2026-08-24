@@ -3,7 +3,7 @@
 -- See also supabase/migrations/ for incremental RPCs.
 --
 -- Legacy note: property_pm_finder.* remains in the database from the removed
--- Propwire cascade but is not used by this app. OpenSOS tables were dropped.
+-- Propwire cascade but is not used by this app.
 
 CREATE SCHEMA IF NOT EXISTS permit_parcel;
 

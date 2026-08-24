@@ -70,7 +70,7 @@ function healthPayload() {
     when_to_use:
       'Shovels commercial GCs (including credit estimates); DCAD/TAD/CCAD commercial parcels; mailing-address operator rollup; persist/filter cold-calling lists in Supabase (e.g. Cayden).',
     when_not_to_use:
-      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, OpenSOS/SOSDirect (removed, legacy), bulk row dumps in chat.',
+      'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
       'Shovels credits: shovels_estimate_credits (cached=0; live API=1 credit/record). Contractors: summary → estimate → query/sample → save_calling_list / sync_to_supabase. Cayden: list_calling_lists → query_calling_list (has_phone/city). Parcels: parcels_summary → parcels_query → sync_to_supabase → build_operators. Verify with select count(*).',
     removed:
@@ -85,7 +85,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) persist those pulls to Supabase calling lists; (3) filter saved lists for cold calling (Cayden etc.); (4) DCAD/TAD/CCAD commercial parcels; (5) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, OpenSOS (removed). Prefer save_calling_list / sync_to_supabase + select count(*).',
+        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) persist those pulls to Supabase calling lists; (3) filter saved lists for cold calling (Cayden etc.); (4) DCAD/TAD/CCAD commercial parcels; (5) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS unmasking. Prefer save_calling_list / sync_to_supabase + select count(*).',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -625,7 +625,7 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 Request: "${request || 'Summarize commercial parcels'}"
 1) parcels_summary
 2) parcels_query with filters; note owner_type split
-3) Drop institutional. For local_llc, do not offer OpenSOS (removed). Use build_operators + free Texas Comptroller PIR.
+3) Drop institutional. For local_llc, use build_operators + free Texas Comptroller PIR.
 4) sync_to_supabase(dataset=parcels) then select count(*)
 Propwire cascade is removed — do not offer it.`,
           },

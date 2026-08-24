@@ -1,4 +1,5 @@
--- Remove legacy OpenSOS and add named calling lists for MCP / cold-calling filters.
+-- Named calling lists for MCP / cold-calling filters.
+-- Also drops leftover unused lookup tables/functions if they still exist.
 
 DROP FUNCTION IF EXISTS public.ingest_permit_parcel_opensos(text, jsonb);
 DROP FUNCTION IF EXISTS public.fetch_permit_parcel_opensos(text, text, text);

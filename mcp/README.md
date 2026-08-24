@@ -17,4 +17,4 @@ Remote MCP: `https://workspace-production-4702.up.railway.app/mcp` (authless Str
 
 Sync writes server-to-server. Verify with `select count(*)`. Do not dump bulk rows into chat.
 
-Propwire cascade and OpenSOS were removed.
+Propwire cascade tools were removed.
