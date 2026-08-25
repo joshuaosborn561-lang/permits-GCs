@@ -59,10 +59,10 @@ This MCP is authless — anyone with the connector URL can set the key. Still ne
 Goal: dial **owner cells**, not office/main/license lines.
 1. \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (Houston/Harris / any external pull)
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
-3. \`match_texas_officers(only_unmatched=true, limit=50)\` until \`remaining_unmatched=0\`. A 22s budget stops early with \`has_more\`. Permanent Comptroller 400s are stored as \`officer_match=error\` and leave the retry queue.
-4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`
-5. Leftovers: \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
-6. \`query_calling_list(dial_status=owner_cell)\`
+3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\`. A 48s budget stops early with \`has_more\`. \`officer_match\` is \`match\` | \`different\` | \`none\` | \`agent\` | \`error\`. \`agent\` = registered agent only (not the owner). Permanent Comptroller 400s are \`error\` and leave the retry queue.
+4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
+5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Leftovers (\`agent\` / \`different\` / \`none\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
+6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells.
 
 The DFW Shovels cache is Dallas / Fort Worth / Rockwall only. For Harris County, import a CSV.
 

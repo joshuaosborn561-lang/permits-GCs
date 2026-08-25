@@ -2,6 +2,15 @@ import { getSetting, loadAppSettings } from './appSettings.js';
 
 export const VERIPHONE_USD_PER_LOOKUP = 0.0024;
 
+/** 10-digit NANP (optional leading 1). Empty / extensions-only / junk → null. */
+export function nanpDigits(phone: string): string | null {
+  let d = (phone || '').replace(/\D/g, '');
+  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
+  if (d.length !== 10) return null;
+  if (d[0] === '0' || d[0] === '1') return null;
+  return d;
+}
+
 export function hasVeriphone(): boolean {
   return Boolean(getSetting('veriphone_api_key'));
 }
@@ -11,7 +20,7 @@ export interface VeriphoneLookup {
   e164: string | null;
   valid: boolean;
   phone_type: string;
-  normalized_type: 'mobile' | 'landline' | 'voip' | 'toll_free' | 'unknown';
+  normalized_type: 'mobile' | 'landline' | 'voip' | 'toll_free' | 'unknown' | 'invalid';
   carrier: string | null;
   country: string | null;
   raw_status: string | null;
@@ -48,12 +57,14 @@ export async function lookupVeriphone(phone: string): Promise<VeriphoneLookup> {
     throw new Error(`Veriphone ${res.status}: ${body?.error || res.statusText}`);
   }
   const rawType = String(body?.phone_type || '');
+  const normalized: VeriphoneLookup['normalized_type'] =
+    body?.phone_valid === false && !rawType ? 'invalid' : normalizeType(rawType);
   return {
     phone,
     e164: body?.phone ?? null,
     valid: Boolean(body?.phone_valid),
     phone_type: rawType || 'unknown',
-    normalized_type: normalizeType(rawType),
+    normalized_type: normalized,
     carrier: body?.carrier ?? null,
     country: body?.country ?? null,
     raw_status: body?.status ?? null,
