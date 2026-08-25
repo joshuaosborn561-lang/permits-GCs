@@ -738,7 +738,7 @@ WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/error so re-runs advance — do not use next_offset while that filter is on. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error.`,
+WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/agent/error so re-runs advance — do not use next_offset while that filter is on. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error. officer_match=agent means registered agent only (not the owner).`,
       inputSchema: {
         list_id: z.string().min(1),
         limit: z.number().int().min(1).max(100).optional().describe('Default 80. Max 100; one call should finish within the 48s budget.'),
@@ -763,14 +763,14 @@ WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s s
     'lookup_line_type',
     {
       title: 'Veriphone line type (cell vs landline)',
-      description: `WHEN TO USE: After scoring, to mark Shovels phones as mobile/landline/voip.
+      description: `WHEN TO USE: After scoring + officers, to mark Shovels phones as mobile/landline/voip.
 COST: ~$2.40 per 1,000 (Veriphone Standard). First call without confirm=true returns the $ estimate only.
-RULES: Show the estimate. confirm=true to spend. Default cap 200. only_unknown=true (default) resumes. Never echo the API key.`,
+RULES: Show the estimate. confirm=true to spend. Default cap 50. only_unknown=true (default) resumes — omit offset. Non-NANP phones are marked invalid (no spend) so the queue drains. match+mobile sets dial_status=owner_cell. Never echo the API key.`,
       inputSchema: {
         list_id: z.string().min(1),
         confirm: z.boolean().optional().describe('Must be true to spend credits'),
-        limit: z.number().int().min(1).max(1000).optional(),
-        offset: z.number().int().min(0).optional(),
+        limit: z.number().int().min(1).max(200).optional().describe('Veriphone lookups per call. Default 50. Invalid phones do not count against this.'),
+        offset: z.number().int().min(0).optional().describe('Ignored when only_unknown=true'),
         only_unknown: z.boolean().optional(),
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
@@ -1026,8 +1026,8 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 Request: "${request || 'Get Cayden owner cells on his latest list'}"
 1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
 2) list_calling_lists(owner=cayden) then score_calling_list(only_unscored=true) until remaining_unscored=0
-3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error.
-4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0
+3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error. officer_match=agent is registered-agent-only (not an owner).
+4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0. Omit offset. match+mobile → dial_status=owner_cell.
 5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
 6) query_calling_list(dial_status=owner_cell). Do not dump the list. Houston/Harris CSVs go through import_calling_list_csv first.`,
           },

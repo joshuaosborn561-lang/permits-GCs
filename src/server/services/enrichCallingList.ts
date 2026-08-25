@@ -20,6 +20,7 @@ import {
   estimateVeriphoneUsd,
   hasVeriphone,
   lookupVeriphone,
+  nanpDigits,
 } from '../lib/veriphone.js';
 import { loadAppSettings } from '../lib/appSettings.js';
 
@@ -81,6 +82,10 @@ function applyDial(row: EnrichmentRow): EnrichmentRow {
     officer_match: row.officer_match || null,
     owner_cell: row.owner_cell || null,
   });
+  if (row.dial_status === 'owner_cell' && !row.owner_cell && row.phone) {
+    row.owner_cell = row.phone;
+    row.owner_cell_source = row.owner_cell_source || 'shovels_mobile';
+  }
   return row;
 }
 
@@ -275,6 +280,7 @@ export async function matchTexasOfficers(opts: {
   let matched = 0;
   let different = 0;
   let none = 0;
+  let agent = 0;
   let errors = 0;
   let timedOut = false;
   const deadline = Date.now() + OFFICER_BUDGET_MS;
@@ -295,16 +301,27 @@ export async function matchTexasOfficers(opts: {
           if (!entity) continue;
           const picked = pickOwnerOfficer(row.contact_name || '', entity);
           row.taxpayer_id = entity.taxpayer_id;
-          row.officer_name = picked.officer?.name ?? null;
-          row.officer_title = picked.officer?.title ?? null;
-          row.officer_street = picked.officer?.street ?? null;
-          row.officer_city = picked.officer?.city ?? row.city ?? null;
-          row.officer_state = picked.officer?.state ?? row.state ?? 'TX';
-          row.officer_zip = picked.officer?.zip ?? row.zip ?? null;
           row.officer_match = picked.match;
-          if (picked.match === 'match') matched += 1;
-          else if (picked.match === 'different') different += 1;
-          else none += 1;
+          if (picked.match === 'agent') {
+            // Registered agent ≠ owner. Do not seed people-search with CT Corp.
+            row.officer_name = null;
+            row.officer_title = picked.officer?.title || 'registered agent';
+            appendEvidence(
+              row,
+              `Registered agent only (${picked.officer?.name || 'unknown'}); not the owner`,
+            );
+            agent += 1;
+          } else {
+            row.officer_name = picked.officer?.name ?? null;
+            row.officer_title = picked.officer?.title ?? null;
+            row.officer_street = picked.officer?.street ?? null;
+            row.officer_city = picked.officer?.city ?? row.city ?? null;
+            row.officer_state = picked.officer?.state ?? row.state ?? 'TX';
+            row.officer_zip = picked.officer?.zip ?? row.zip ?? null;
+            if (picked.match === 'match') matched += 1;
+            else if (picked.match === 'different') different += 1;
+            else none += 1;
+          }
           resolved = true;
           break;
         } catch (err) {
@@ -347,6 +364,7 @@ export async function matchTexasOfficers(opts: {
     matched,
     different,
     none,
+    agent,
     errors,
     timed_out: timedOut,
     budget_ms: OFFICER_BUDGET_MS,
@@ -356,13 +374,16 @@ export async function matchTexasOfficers(opts: {
     // only_unmatched filters in SQL; offset stays unused. null avoids "0 while has_more".
     next_offset: onlyUnmatched ? null : fetched.offset + processed.length,
     resume_with: onlyUnmatched ? { only_unmatched: true, limit } : { offset: fetched.offset + processed.length, limit },
-    by_officer_match: { match: matched, different, none, errors },
+    by_officer_match: { match: matched, different, none, agent, errors },
     sample: sample(processed),
     assistant_instructions: remaining
       ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=${limit}). Do not pass next_offset while only_unmatched=true — the unmatched filter is the pager. Sole-prop / person-name companies with no franchise-tax account are officer_match=none (not error). Do not dump the list.`
       : 'Officer names are public PIR data. If match=different, Google the officer name (not the Shovels PM). Next lookup_line_type or owner_people_search.',
   };
 }
+
+const LINE_TYPE_BUDGET_MS = 48_000;
+const LINE_TYPE_DEFAULT_LIMIT = 50;
 
 export async function lookupLineTypes(opts: {
   list_id: string;
@@ -373,22 +394,37 @@ export async function lookupLineTypes(opts: {
 }): Promise<Record<string, unknown>> {
   await loadAppSettings();
   const onlyUnknown = opts.only_unknown !== false;
+  const want = opts.limit ?? LINE_TYPE_DEFAULT_LIMIT;
+  // only_unknown pages by filter; client offset would skip remaining unknown rows.
+  const fetchOffset = onlyUnknown ? 0 : (opts.offset ?? 0);
   const fetched = await fetchContacts(opts.list_id.trim(), {
-    limit: opts.limit ?? 200,
-    offset: opts.offset ?? 0,
+    limit: want,
+    offset: fetchOffset,
     unknownLineTypeOnly: onlyUnknown,
   });
-  const targets = fetched.rows.filter((r) => Boolean(digits(r.phone || '')));
-  const estimate = estimateVeriphoneUsd(targets.length);
+  const usable = fetched.rows.filter((r) => Boolean(nanpDigits(r.phone || '')));
+  const junk = fetched.rows.filter((r) => !nanpDigits(r.phone || ''));
+  const estimate = estimateVeriphoneUsd(
+    Math.min(want, fetched.remaining_unknown_line_type || usable.length || want),
+  );
   if (opts.confirm !== true) {
     return {
       ok: false,
       needs_confirm: true,
-      ...estimate,
+      lookups: usable.length,
+      usd: estimate.usd,
+      note: estimate.note,
       ...supabaseTargetMeta(),
+      fetched: fetched.rows.length,
+      usable_phones: usable.length,
+      invalid_phones: junk.length,
       remaining_unknown: fetched.remaining_unknown_line_type,
-      has_more: fetched.remaining_unknown_line_type > targets.length,
-      error: `Would look up ${targets.length} numbers (~$${estimate.usd}). Set confirm=true to spend Veriphone credits.`,
+      has_more: fetched.remaining_unknown_line_type > 0,
+      next_offset: onlyUnknown ? null : fetchOffset + fetched.rows.length,
+      resume_with: { only_unknown: true, confirm: true, limit: want },
+      error: `Would look up ${usable.length} numbers (~$${estimate.usd})${
+        junk.length ? `; ${junk.length} non-NANP phones in this page will be marked invalid (no Veriphone spend)` : ''
+      }. Set confirm=true to spend Veriphone credits.`,
     };
   }
   if (!hasVeriphone()) {
@@ -398,41 +434,107 @@ export async function lookupLineTypes(opts: {
       ...estimate,
     };
   }
+
   let looked = 0;
+  let markedInvalid = 0;
   let errors = 0;
-  for (const row of targets) {
-    try {
-      const hit = await lookupVeriphone(row.phone || '');
-      row.phone_line_type = hit.normalized_type;
-      row.phone_carrier = hit.carrier;
-      applyDial(row);
-      looked += 1;
-      await sleep(80);
-    } catch (err) {
-      errors += 1;
-      row.evidence = [row.evidence, err instanceof Error ? err.message : 'veriphone failed']
-        .filter(Boolean)
-        .join(' · ');
-    }
+  let timedOut = false;
+  let persistError: string | null = null;
+  const deadline = Date.now() + LINE_TYPE_BUDGET_MS;
+  const processed: EnrichmentRow[] = [];
+  let remainingUnknown = fetched.remaining_unknown_line_type;
+  let offset = fetchOffset;
+
+  async function save(row: EnrichmentRow) {
+    const err = await persistRows([row]);
+    if (err) persistError = err;
   }
-  const persistError = await persistRows(targets);
-  const remaining = Math.max(0, fetched.remaining_unknown_line_type - looked);
+
+  async function markInvalid(row: EnrichmentRow, reason: string) {
+    row.phone_line_type = 'invalid';
+    appendEvidence(row, reason);
+    applyDial(row);
+    processed.push(row);
+    await save(row);
+    markedInvalid += 1;
+    remainingUnknown = Math.max(0, remainingUnknown - 1);
+  }
+
+  let page = fetched.rows;
+  let rounds = 0;
+  while (looked < want && Date.now() <= deadline && !persistError && rounds < 15) {
+    rounds += 1;
+    if (!page.length) break;
+    for (const row of page) {
+      if (Date.now() > deadline) {
+        timedOut = true;
+        break;
+      }
+      if (!nanpDigits(row.phone || '')) {
+        await markInvalid(row, 'No 10-digit NANP phone; skipped Veriphone');
+        continue;
+      }
+      if (looked >= want) break;
+      try {
+        const hit = await lookupVeriphone(row.phone || '');
+        row.phone_line_type = hit.normalized_type;
+        row.phone_carrier = hit.carrier;
+        applyDial(row);
+        processed.push(row);
+        await save(row);
+        looked += 1;
+        remainingUnknown = Math.max(0, remainingUnknown - 1);
+        await sleep(20);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'veriphone failed';
+        errors += 1;
+        if (/invalid|not valid|not a valid/i.test(msg)) {
+          await markInvalid(row, msg);
+        } else {
+          appendEvidence(row, msg);
+        }
+      }
+    }
+    if (timedOut || looked >= want || persistError) break;
+    const more = await fetchContacts(opts.list_id.trim(), {
+      limit: Math.max(want - looked, 1),
+      offset: onlyUnknown ? 0 : offset + page.length,
+      unknownLineTypeOnly: onlyUnknown,
+    });
+    remainingUnknown = more.remaining_unknown_line_type;
+    offset = more.offset;
+    page = more.rows;
+  }
+  if (Date.now() > deadline) timedOut = true;
+
+  const remaining = remainingUnknown;
+  const noop = looked === 0 && markedInvalid === 0;
   return {
-    ok: !persistError,
-    error: persistError,
+    ok: !persistError && !(noop && remaining > 0),
+    error:
+      persistError ||
+      (noop && remaining > 0
+        ? 'Looked up 0 numbers. Re-run lookup_line_type(only_unknown=true, confirm=true) and omit offset — offset skips remaining unknown rows.'
+        : undefined),
     ...supabaseTargetMeta(),
+    processed: processed.length,
     looked_up: looked,
+    marked_invalid: markedInvalid,
     errors,
+    timed_out: timedOut,
+    budget_ms: LINE_TYPE_BUDGET_MS,
     remaining_unknown: remaining,
     has_more: remaining > 0,
+    next_offset: onlyUnknown ? null : offset,
+    resume_with: { only_unknown: true, confirm: true, limit: want },
     spent: estimateVeriphoneUsd(looked),
-    by_line_type: countBy(targets, 'phone_line_type'),
-    by_dial_status: countBy(targets, 'dial_status'),
-    sample: sample(targets),
+    by_line_type: countBy(processed, 'phone_line_type'),
+    by_dial_status: countBy(processed, 'dial_status'),
+    sample: sample(processed),
     assistant_instructions:
       remaining > 0
-        ? `Looked up ${looked}; ${remaining} numbers still unknown. Re-run lookup_line_type(only_unknown=true) after confirming spend. Do not dump the list.`
-        : 'Show line-type counts and $ spent. owner_cell = mobile + owner identity. Leftovers go to owner_people_search.',
+        ? `Looked up ${looked} (${markedInvalid} invalid phones marked, no Veriphone spend). ${remaining} still unknown. Re-run lookup_line_type(only_unknown=true, confirm=true, limit=${want}) — omit offset. match+mobile → dial_status=owner_cell; agent/different still need people-search. Do not dump the list.`
+        : 'Show line-type counts and $ spent. query_calling_list(dial_status=owner_cell) for match+mobile. Leftovers (agent/different/none) go to owner_people_search.',
   };
 }
 
@@ -451,7 +553,8 @@ export async function ownerPeopleSearch(opts: {
       const extra = r.place_id?.startsWith('shovels:')
         ? getShovelsContractor(r.place_id.slice('shovels:'.length))
         : null;
-      const searchName = r.officer_name || r.contact_name || '';
+      const searchName =
+        r.officer_match === 'agent' ? r.contact_name || '' : r.officer_name || r.contact_name || '';
       const pack = buildPeopleSearchPack({
         name: searchName,
         city: r.officer_city || r.city || extra?.address_city,

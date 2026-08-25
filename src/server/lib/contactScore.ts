@@ -135,6 +135,8 @@ export function scoreContact(input: ScoreInput): ContactScore {
   };
 }
 
+export type OfficerMatch = 'match' | 'different' | 'none' | 'agent' | 'error';
+
 export function computeDialStatus(opts: {
   owner_score: OwnerScore | string;
   email_kind?: string | null;
@@ -143,13 +145,15 @@ export function computeDialStatus(opts: {
   owner_cell: string | null;
 }): DialStatus {
   if (opts.owner_cell) return 'owner_cell';
-  if (opts.owner_score === 'skip') return 'skip';
-  if (opts.owner_score === 'office_likely') return 'company_line';
+  if (opts.owner_score === 'skip' || opts.line_type === 'invalid') return 'skip';
   const mobile = opts.line_type === 'mobile';
   const landline = opts.line_type === 'landline' || opts.line_type === 'voip';
+  // agent = registered agent only (CT Corp etc.) — not an owner. different = legal
+  // officer is not the Shovels PM, so the Shovels phone is not the owner cell.
   const identity = opts.officer_match === 'match' || opts.email_kind === 'name_match';
+  // Officer-confirmed mobile wins over a generic/info email (office_likely).
   if (mobile && identity) return 'owner_cell';
   if (landline && identity) return 'owner_landline';
-  if (opts.line_type === 'toll_free') return 'company_line';
+  if (opts.owner_score === 'office_likely' || opts.line_type === 'toll_free') return 'company_line';
   return 'needs_enrichment';
 }
