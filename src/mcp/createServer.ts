@@ -115,7 +115,7 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score (only_unscored) → match_texas_officers (limit 50, only_unmatched) → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Non-DFW: import_calling_list_csv. Never echo API keys.',
+      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score (only_unscored) → match_texas_officers (limit 80, only_unmatched) → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Non-DFW: import_calling_list_csv. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -738,10 +738,10 @@ WHAT IT DOES: Flags owner-likely vs company-line. $0. Default only_unscored=true
     {
       title: 'Match Texas Comptroller officers (free PIR)',
       description: `WHEN TO USE: Confirm the legal owner/manager name for companies on a calling list.
-WHAT IT DOES: Comptroller franchise search. Default limit 50 (HTTP budget ~22s). only_unmatched=true skips match/none/different/error so re-runs advance. Permanent 400s marked officer_match=error. Fuzzy name match (1–2 char typos).`,
+WHAT IT DOES: Comptroller franchise search. Default limit 80 (HTTP budget ~48s so a full batch can finish). only_unmatched=true skips match/none/different/error so re-runs advance — do not use next_offset while that filter is on. Person-style names (ABEL GARCIA) skip partnership substring hits. Sole props with no franchise-tax account are officer_match=none, not error.`,
       inputSchema: {
         list_id: z.string().min(1),
-        limit: z.number().int().min(1).max(100).optional().describe('Default 50. Keep small; re-run.'),
+        limit: z.number().int().min(1).max(100).optional().describe('Default 80. Max 100; one call should finish within the 48s budget.'),
         offset: z.number().int().min(0).optional(),
         only_unmatched: z
           .boolean()
@@ -1026,7 +1026,7 @@ Request: "${request || 'Show Cayden calling lists with phone numbers'}"
 Request: "${request || 'Get Cayden owner cells on his latest list'}"
 1) enrichment_keys_status — if Veriphone or Texas CPA missing, have Cayden paste via set_enrichment_api_key. Never echo keys.
 2) list_calling_lists(owner=cayden) then score_calling_list(only_unscored=true) until remaining_unscored=0
-3) match_texas_officers(only_unmatched=true, limit=50) until remaining_unmatched=0. Permanent CPA 400s are officer_match=error and will not retry.
+3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error.
 4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0
 5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
 6) query_calling_list(dial_status=owner_cell). Do not dump the list. Houston/Harris CSVs go through import_calling_list_csv first.`,

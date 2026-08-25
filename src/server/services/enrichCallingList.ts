@@ -11,8 +11,8 @@ import { getShovelsContractor } from './shovelsContractors.js';
 import {
   getFranchiseAccount,
   hasTexasCpa,
-  pickBestEntity,
   pickOwnerOfficer,
+  rankFranchiseHits,
   searchFranchiseEntities,
   TexasCpaError,
 } from '../lib/texasComptroller.js';
@@ -231,18 +231,21 @@ export async function scoreCallingList(opts: {
     offset: fetched.offset,
     remaining_unscored: remaining,
     has_more: remaining > 0,
-    next_offset: onlyUnscored ? 0 : fetched.offset + scored.length,
+    next_offset: onlyUnscored ? null : fetched.offset + scored.length,
     by_owner_score: countBy(scored, 'owner_score'),
     by_dial_status: countBy(scored, 'dial_status'),
     sample: sample(scored),
     assistant_instructions:
       remaining > 0
         ? `Scored ${scored.length}; ${remaining} still unscored. Call score_calling_list again (only_unscored=true) to continue. Do not dump the list.`
-        : 'Free score only. Next: match_texas_officers in batches (limit 50, only_unmatched=true). Do not dump the list.',
+        : 'Free score only. Next: match_texas_officers in batches (limit 80, only_unmatched=true). Do not dump the list.',
   };
 }
 
-const OFFICER_BUDGET_MS = 22_000;
+/** ~440ms/row historically; 48s fits a 60s HTTP cap with headroom for persist. */
+const OFFICER_BUDGET_MS = 48_000;
+const OFFICER_DEFAULT_LIMIT = 80;
+const OFFICER_ROW_GAP_MS = 20;
 
 function appendEvidence(row: EnrichmentRow, note: string) {
   row.evidence = [row.evidence, note].filter(Boolean).join(' · ');
@@ -262,8 +265,9 @@ export async function matchTexasOfficers(opts: {
     };
   }
   const onlyUnmatched = opts.only_unmatched !== false;
+  const limit = opts.limit ?? OFFICER_DEFAULT_LIMIT;
   const fetched = await fetchContacts(opts.list_id.trim(), {
-    limit: opts.limit ?? 50,
+    limit,
     offset: opts.offset ?? 0,
     unmatchedOnly: onlyUnmatched,
   });
@@ -283,16 +287,12 @@ export async function matchTexasOfficers(opts: {
     }
     try {
       const hits = await searchFranchiseEntities(row.company_name || '');
-      const best = pickBestEntity(row.company_name || '', hits);
-      if (!best) {
-        row.officer_match = 'none';
-        none += 1;
-      } else {
-        const entity = await getFranchiseAccount(best.taxpayerId);
-        if (!entity) {
-          row.officer_match = 'none';
-          none += 1;
-        } else {
+      const ranked = rankFranchiseHits(row.company_name || '', hits);
+      let resolved = false;
+      for (const cand of ranked) {
+        try {
+          const entity = await getFranchiseAccount(cand.taxpayerId);
+          if (!entity) continue;
           const picked = pickOwnerOfficer(row.contact_name || '', entity);
           row.taxpayer_id = entity.taxpayer_id;
           row.officer_name = picked.officer?.name ?? null;
@@ -305,12 +305,24 @@ export async function matchTexasOfficers(opts: {
           if (picked.match === 'match') matched += 1;
           else if (picked.match === 'different') different += 1;
           else none += 1;
+          resolved = true;
+          break;
+        } catch (err) {
+          if (err instanceof TexasCpaError && err.notFranchiseTax) continue;
+          throw err;
         }
+      }
+      if (!resolved) {
+        row.officer_match = 'none';
+        if (ranked.length) {
+          appendEvidence(row, 'Texas CPA: no franchise-tax account for this name (sole prop / partnership)');
+        }
+        none += 1;
       }
       applyDial(row);
       processed.push(row);
       await persistRows([row]);
-      await sleep(80);
+      await sleep(OFFICER_ROW_GAP_MS);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'officer lookup failed';
       const permanent = err instanceof TexasCpaError ? err.permanent : /Texas CPA \w+ 400\b/.test(msg);
@@ -337,14 +349,17 @@ export async function matchTexasOfficers(opts: {
     none,
     errors,
     timed_out: timedOut,
+    budget_ms: OFFICER_BUDGET_MS,
     list_total: fetched.total,
     remaining_unmatched: remaining,
     has_more: remaining > 0,
-    next_offset: onlyUnmatched ? 0 : fetched.offset + processed.length,
+    // only_unmatched filters in SQL; offset stays unused. null avoids "0 while has_more".
+    next_offset: onlyUnmatched ? null : fetched.offset + processed.length,
+    resume_with: onlyUnmatched ? { only_unmatched: true, limit } : { offset: fetched.offset + processed.length, limit },
     by_officer_match: { match: matched, different, none, errors },
     sample: sample(processed),
     assistant_instructions: remaining
-      ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=50). Permanent CPA 400s are officer_match=error and will not retry. Do not dump the list.`
+      ? `Processed ${processed.length}; ${remaining} still unmatched. Re-run match_texas_officers(only_unmatched=true, limit=${limit}). Do not pass next_offset while only_unmatched=true — the unmatched filter is the pager. Sole-prop / person-name companies with no franchise-tax account are officer_match=none (not error). Do not dump the list.`
       : 'Officer names are public PIR data. If match=different, Google the officer name (not the Shovels PM). Next lookup_line_type or owner_people_search.',
   };
 }

@@ -62,6 +62,24 @@ export class TexasCpaError extends Error {
     if (this.status === 429) return false;
     return this.status >= 400 && this.status < 500;
   }
+
+  /** Sole props / partnerships with a taxpayer number but no franchise-tax account. */
+  get notFranchiseTax(): boolean {
+    return isNonFranchiseTaxpayerMessage(this.message);
+  }
+}
+
+/** Comptroller returns the reason on `error`, not `message`. */
+export function cpaErrorText(body: Record<string, unknown> | null, fallback: string): string {
+  if (!body) return fallback;
+  for (const candidate of [body.error, body.message, body.detail]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return fallback;
+}
+
+export function isNonFranchiseTaxpayerMessage(msg: string): boolean {
+  return /not set up for franchise tax/i.test(msg);
 }
 
 async function readJson(url: string, key?: string) {
@@ -94,7 +112,7 @@ export async function searchFranchiseEntities(name: string): Promise<Array<{ tax
     throw new TexasCpaError(
       'search',
       res.status,
-      `Texas CPA search ${res.status}: ${String(body?.message || res.statusText)}`,
+      `Texas CPA search ${res.status}: ${cpaErrorText(body, res.statusText)}`,
     );
   }
   const data = (body?.data as Array<{ taxpayerId?: string; name?: string }> | undefined) ?? [];
@@ -116,7 +134,7 @@ export async function getFranchiseAccount(taxpayerId: string): Promise<Comptroll
     throw new TexasCpaError(
       'detail',
       res.status,
-      `Texas CPA detail ${res.status}: ${String(body?.message || res.statusText)}`,
+      `Texas CPA detail ${res.status}: ${cpaErrorText(body, res.statusText)}`,
     );
   }
   const d = body?.data as {
@@ -231,35 +249,65 @@ export function namesLooselyMatch(a: string, b: string): boolean {
 function companyKey(s: string): string {
   return s
     .toUpperCase()
+    .replace(/\[[^\]]*\]/g, ' ')
     .replace(/[^A-Z0-9 ]+/g, ' ')
     .replace(/\b(THE|LLC|L L C|INC|INCORPORATED|LTD|LP|LLP|CO|COMPANY|CORP|CORPORATION)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
 
+const BUSINESS_HINT =
+  /\b(LLC|L L C|INC|INCORPORATED|LTD|LP|LLP|CO|COMPANY|CORP|CORPORATION|CONSTRUCTION|ROOFING|PLUMBING|ELECTRIC|ELECTRICAL|SERVICES?|GROUP|HOLDINGS|ENTERPRISES|CONTRACTORS?|CONTRACTING|BUILDERS?|REMODEL|HVAC|PAINTING|FLOORING|CONCRETE|MASONRY|LANDSCAP\w*|POOL|FENCE|WINDOWS?|DOORS?|SIDING|DRYWALL|TRUCKING|TRANSPORT|LOGISTICS|HEATING|COOLING)\b/i;
+
+/** "ABEL GARCIA" / "ALEJANDRO MARTINEZ" — not an LLC/trade name. */
+export function looksLikePersonName(name: string): boolean {
+  const key = companyKey(name);
+  const tokens = key.split(' ').filter(Boolean);
+  if (tokens.length < 2 || tokens.length > 4) return false;
+  if (BUSINESS_HINT.test(name) || BUSINESS_HINT.test(key)) return false;
+  return tokens.every((t) => /^[A-Z]+$/.test(t) && t.length >= 2 && t.length <= 16);
+}
+
+function scoreFranchiseHit(target: string, hitName: string, personStyle: boolean): number {
+  const key = companyKey(hitName);
+  if (!key) return 0;
+  if (key === target) return 100;
+  if (personStyle) {
+    // Person-style company names must not match "NAME AND PARTNER" / "NAME TRUCKING LLC".
+    if (target.length >= 8 && levenshtein(key, target) <= 1) return 95;
+    return 0;
+  }
+  if (key.includes(target) || target.includes(key)) return 80;
+  const words = target.split(' ').filter((w) => w.length > 2);
+  return words.filter((w) => key.includes(w)).length * 10;
+}
+
+export type RankedFranchiseHit = { taxpayerId: string; name: string; score: number };
+
+/** Rank CPA search hits. Person-style queries only keep exact / 1-char matches. */
+export function rankFranchiseHits(
+  company: string,
+  hits: Array<{ taxpayerId: string; name: string }>,
+): RankedFranchiseHit[] {
+  if (!hits.length) return [];
+  const personStyle = looksLikePersonName(company);
+  const target = companyKey(company);
+  const scored = hits
+    .map((hit) => ({ ...hit, score: scoreFranchiseHit(target, hit.name, personStyle) }))
+    .filter((hit) => hit.score > 0)
+    .sort((a, b) => b.score - a.score);
+  const min = personStyle ? 95 : 20;
+  const viable = scored.filter((hit) => hit.score >= min);
+  if (viable.length) return viable;
+  if (!personStyle && hits.length === 1) return [{ ...hits[0]!, score: 1 }];
+  return [];
+}
+
 export function pickBestEntity(
   company: string,
   hits: Array<{ taxpayerId: string; name: string }>,
 ): { taxpayerId: string; name: string } | null {
-  if (!hits.length) return null;
-  const target = companyKey(company);
-  let best = hits[0]!;
-  let bestScore = 0;
-  for (const hit of hits) {
-    const key = companyKey(hit.name);
-    let score = 0;
-    if (key === target) score = 100;
-    else if (key.includes(target) || target.includes(key)) score = 80;
-    else {
-      const words = target.split(' ').filter((w) => w.length > 2);
-      score = words.filter((w) => key.includes(w)).length * 10;
-    }
-    if (score > bestScore) {
-      best = hit;
-      bestScore = score;
-    }
-  }
-  return bestScore >= 20 ? best : hits.length === 1 ? hits[0]! : null;
+  return rankFranchiseHits(company, hits)[0] ?? null;
 }
 
 export function pickOwnerOfficer(
