@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { hasShovelsApi, probeContractorCount, resolveShovelsGeo, getShovelsUsage } from '../lib/shovels.js';
 import type { ContractorQuery } from './shovelsContractors.js';
 import { countMatchingShovelsContractors, loadShovelsContractors } from './shovelsContractors.js';
+import { resolveGeoTargets } from './shovelsGeoTargets.js';
 
 /** How the last in-repo DFW commercial pull actually billed. */
 export const LAST_DFW_JOB = {
@@ -24,26 +25,13 @@ export const LAST_DFW_JOB = {
   },
 } as const;
 
-const GEO_ALIASES: Record<string, { kind: 'city' | 'county'; q: string; place: string }> = {
-  dallas: { kind: 'city', q: 'Dallas', place: 'Dallas' },
-  dallas_city: { kind: 'city', q: 'Dallas', place: 'Dallas' },
-  dallas_county: { kind: 'county', q: 'Dallas', place: 'Dallas' },
-  fort_worth: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
-  fortworth: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
-  tarrant: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
-  tarrant_county: { kind: 'county', q: 'Tarrant', place: 'Fort_Worth' },
-  houston: { kind: 'city', q: 'Houston', place: 'Houston' },
-  harris: { kind: 'county', q: 'Harris', place: 'Harris' },
-  harris_county: { kind: 'county', q: 'Harris', place: 'Harris' },
-};
-
 export interface ShovelsCreditEstimateInput extends ContractorQuery {
   max_records?: number;
   date_from?: string;
   date_to?: string;
   property_type?: string;
   page_size?: number;
-  /** County/city aliases: Dallas, Tarrant, Fort_Worth, Rockwall, or comma list. */
+  /** Any US city/county/state, or aliases: Dallas, east_coast, west_coast, Miami, CA, … */
   geos?: string;
 }
 
@@ -73,42 +61,6 @@ function pagesFor(count: number, pageSize: number): number {
   return Math.ceil(count / pageSize);
 }
 
-function resolveTargets(input: ShovelsCreditEstimateInput): Array<{ kind: 'city' | 'county'; q: string; place: string }> {
-  const raw = [input.geos, input.place, input.city]
-    .filter(Boolean)
-    .join(',')
-    .split(/[,\n]/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!raw.length) {
-    return [
-      GEO_ALIASES.dallas,
-      GEO_ALIASES.tarrant,
-    ];
-  }
-  const out: Array<{ kind: 'city' | 'county'; q: string; place: string }> = [];
-  const seen = new Set<string>();
-  for (const token of raw) {
-    const key = token.toLowerCase().replace(/\s+/g, '_');
-    const alias = GEO_ALIASES[key];
-    if (alias) {
-      if (seen.has(alias.place)) continue;
-      seen.add(alias.place);
-      out.push(alias);
-      continue;
-    }
-    const place = token.replace(/\s+/g, '_');
-    if (seen.has(place)) continue;
-    seen.add(place);
-    out.push({
-      kind: /county/i.test(token) ? 'county' : 'city',
-      q: token.replace(/_/g, ' ').replace(/ county$/i, ''),
-      place,
-    });
-  }
-  return out;
-}
-
 function historicalPages(place: string): { pages: number; fetched: number } | null {
   if (place === 'Dallas') return { pages: LAST_DFW_JOB.pages.Dallas, fetched: LAST_DFW_JOB.fetched.Dallas };
   if (place === 'Fort_Worth') return { pages: LAST_DFW_JOB.pages.Fort_Worth, fetched: LAST_DFW_JOB.fetched.Fort_Worth };
@@ -120,8 +72,7 @@ function historicalPages(place: string): { pages: number; fetched: number } | nu
 
 /**
  * Accurate live estimate: 1 cheap include_count probe per geo, then
- * credits ≈ pages at size=100. Matches the last DFW job (67 requests /
- * 6,124 contractors — Dallas+Tarrant well under 500).
+ * credits ≈ pages at size=100. Works for any US geo (not TX-only).
  */
 export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {}) {
   const pageSize = Math.min(100, Math.max(1, q.page_size ?? 100));
@@ -130,7 +81,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     date_to: q.date_to || defaultWindow().date_to,
   };
   const propertyType = q.property_type || 'commercial';
-  const targets = resolveTargets(q);
+  const targets = resolveGeoTargets(q);
   const cachedMatching = countMatchingShovelsContractors(q);
   const lastJob = loadLastJobMeta();
 
@@ -145,7 +96,7 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     try {
       usage = await getShovelsUsage();
       for (const t of targets) {
-        const geo = await resolveShovelsGeo({ kind: t.kind, q: t.q });
+        const geo = await resolveShovelsGeo({ kind: t.kind, q: t.q, state: t.state });
         const probe = await probeContractorCount({
           geo,
           permit_from: window.date_from,
@@ -202,6 +153,8 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     companies = Math.min(companies, q.max_records);
   }
 
+  const places = targets.map((t) => t.place).join(', ');
+
   return {
     ok: true,
     source: live ? 'shovels_api_include_count' : liveError ? 'last_job_fallback' : 'last_job_no_api_key',
@@ -245,9 +198,9 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
       city: q.city ?? null,
       state: q.state ?? null,
     },
-    explanation: `Dallas+Tarrant-style pull: ~${pages} pages / ~${companies} companies. Free/trial (page meter): ~${pages} credits. Paid (company meter): ~${companies} credits. Last DFW job used 67 requests for 6,124 unique contractors and stayed under 500 — that is the free/page meter, not paid.`,
+    explanation: `Pull for ${places || 'default geos'}: ~${pages} pages / ~${companies} companies. Free/trial (page meter): ~${pages} credits. Paid (company meter): ~${companies} credits. Any US city/county/state is allowed — no timezone or TX-only restriction. Use shovels_pull_calling_list(confirm=true) to fetch.`,
     assistant_instructions: hasShovelsApi()
-      ? 'Always show BOTH numbers: credits.free_tier_pages vs credits.paid_tier_companies. Ask which plan the key is on. Last Dallas+Tarrant under 500 = free/page billing. If they are on paid now, quote paid_tier_companies. Cached list tools still cost 0.'
+      ? 'Always show BOTH numbers: credits.free_tier_pages vs credits.paid_tier_companies. Ask which plan the key is on. Cayden can search East/West coast or any US market anytime via shovels_pull_calling_list. Cached DFW list tools still cost 0.'
       : 'No API key is configured, so this is the last-job fallback. Offer shovels_set_api_key so Cayden can paste a key. Never echo the full key. Still show both free_tier_pages and paid_tier_companies.',
   };
 }

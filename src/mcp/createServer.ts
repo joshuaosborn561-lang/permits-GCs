@@ -35,6 +35,7 @@ import {
   sampleParcels,
 } from '../server/services/parcels.js';
 import { estimateShovelsCredits } from '../server/services/shovelsCredits.js';
+import { pullShovelsCallingList } from '../server/services/pullShovelsCallingList.js';
 import {
   contractorsToCsv,
   getShovelsContractor,
@@ -68,7 +69,7 @@ const placeFilter = z
   .min(1)
   .optional()
   .describe(
-    'Geography tag. The in-repo cache is Dallas | Fort_Worth | Rockwall_County. Houston/Harris and other markets: import_calling_list_csv (or live Shovels). Passing Houston on the cache returns 0 rows.',
+    'Geography tag. Cache tools: Dallas | Fort_Worth | Rockwall_County. Live tools (shovels_pull_calling_list / estimate): any US city, county, state code, or east_coast / west_coast.',
   );
 
 const countyEnum = z.enum(['Dallas', 'Tarrant', 'Collin']).optional();
@@ -115,7 +116,7 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Keys: set_enrichment_api_key for Veriphone + Texas CPA. Score (only_unscored) → match_texas_officers (limit 80, only_unmatched) → lookup_line_type → owner_people_search → query_calling_list(dial_status=owner_cell). Non-DFW: import_calling_list_csv. Never echo API keys.',
+      'Any US geo anytime via shovels_pull_calling_list (east_coast/west_coast/city/state). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers → lookup_line_type → owner_people_search. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -128,7 +129,7 @@ export function createPermitParcelMcpServer(): McpServer {
       version: '2.0.0',
       title: 'Permit & Parcel MCP (permits-GCs)',
       description:
-        'USE FOR: (1) Shovels commercial contractor contacts (~6,124 DFW GCs) including Shovels API credit estimates; (2) Cayden can set/change the Shovels API key from Claude; (3) persist those pulls to Supabase calling lists; (4) filter saved lists for cold calling; (5) DCAD/TAD/CCAD commercial parcels; (6) build_operators mailing-address rollup. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS unmasking. Prefer save_calling_list / sync_to_supabase + select count(*). Never echo a full API key.',
+        'USE FOR: (1) Live Shovels commercial GC pulls for ANY US market (East/West coast included) via shovels_pull_calling_list; (2) free DFW cache (~6,124); (3) credit estimates; (4) Cayden sets Shovels API key; (5) Supabase calling lists; (6) DCAD/TAD/CCAD parcels + build_operators. No timezone / TX-only restriction on live search. DO NOT USE FOR: Propwire/LoopNet, Maps scrapes, paid SOS. Never echo a full API key.',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
@@ -477,14 +478,14 @@ RULES: confirm must be true. Never echo any key.`,
     'shovels_estimate_credits',
     {
       title: 'Estimate Shovels API credits',
-      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost.
-WHAT IT DOES: Probes Shovels include_count and returns TWO estimates: free_tier_pages (1 credit/page — last Dallas+Tarrant was ~65 / under 500) and paid_tier_companies (1 credit per contractor). Default geos = Dallas + Tarrant.
-NEXT: Show both numbers. Ask if they are on free or paid. Cached save_calling_list still costs 0.`,
+      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost (any US market).
+WHAT IT DOES: Probes Shovels include_count and returns TWO estimates: free_tier_pages and paid_tier_companies. Default geos = Dallas + Tarrant. Accepts east_coast, west_coast, city names, counties, or state codes (CA, FL, …). No timezone restriction.
+NEXT: Show both numbers. To actually pull, use shovels_pull_calling_list. Cached save_calling_list (DFW file) still costs 0.`,
       inputSchema: {
         geos: z
           .string()
           .optional()
-          .describe('Comma list: Dallas, Tarrant, Fort_Worth, Rockwall. Default Dallas+Tarrant'),
+          .describe('Comma list or alias: Dallas, Miami, east_coast, west_coast, CA, "Los Angeles, CA". Default Dallas+Tarrant'),
         place: placeFilter,
         city: z.string().optional(),
         date_from: z.string().optional().describe('YYYY-MM-DD, default last 12 months'),
@@ -504,13 +505,57 @@ NEXT: Show both numbers. Ask if they are on free or paid. Cached save_calling_li
   );
 
   server.registerTool(
+    'shovels_pull_calling_list',
+    {
+      title: 'Live Shovels pull → Supabase calling list (any US geo)',
+      description: `WHEN TO USE: Cayden (or anyone) wants a commercial GC calling list for ANY US market — East coast, West coast, Miami, LA, NYC, a state code, etc. Not limited to DFW and not timezone-restricted.
+WHAT IT DOES: Without confirm=true, returns a credit estimate only. With confirm=true, pages Shovels /contractors/search for the requested geos, writes scrape_leads + calling_lists, returns list id + counts.
+RULES: Prefer exclude_national_chains=true and has_phone=true for dialable locals. Default max_records=1500 (cap 8000). east_coast / west_coast expand to major metros (not whole coasts) to control spend; use geos=CA for statewide.
+NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
+      inputSchema: {
+        geos: z
+          .string()
+          .optional()
+          .describe('e.g. east_coast, west_coast, Miami, "Los Angeles, CA", CA, Atlanta,FL'),
+        place: placeFilter,
+        city: z.string().optional(),
+        state: z.string().optional().describe('Optional 2-letter state disambiguator'),
+        date_from: z.string().optional(),
+        date_to: z.string().optional(),
+        property_type: z.string().optional().describe("Default 'commercial'"),
+        page_size: z.number().int().min(1).max(100).optional(),
+        max_records: z.number().int().min(1).max(8000).optional().describe('Default 1500'),
+        has_phone: z.boolean().optional(),
+        has_email: z.boolean().optional(),
+        exclude_national_chains: excludeNationalChains,
+        min_permit_count: minPermitCount,
+        max_permit_count: maxPermitCount,
+        name: z.string().optional().describe('Human list name'),
+        owner: z.string().optional().describe('Default cayden'),
+        confirm: z
+          .boolean()
+          .optional()
+          .describe('Must be true to spend Shovels credits and write the list'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await pullShovelsCallingList(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'shovels_pull_calling_list failed');
+      }
+    },
+  );
+
+  server.registerTool(
     'save_calling_list',
     {
       title: 'Save contractor pull to Supabase calling list',
-      description: `WHEN TO USE: Persist a filtered Shovels GC pull so Cayden (or another caller) can filter it later via MCP.
-WHAT IT DOES: Writes matching contractors to public.scrape_leads and catalogs the list in permit_parcel.calling_lists (owner + name). 0 Shovels credits (local file). Returns counts + list id only.
-NEXT: Tell the user the list id and owner. They filter with list_calling_lists / query_calling_list.
-QUALIFY: exclude_national_chains=true. Do not drop low-permit locals. Optional min/max only if they name a band.`,
+      description: `WHEN TO USE: Persist a filtered DFW cache pull (Dallas/Fort Worth/Rockwall file) — free, 0 credits.
+For East/West coast or any non-DFW market use shovels_pull_calling_list instead.
+WHAT IT DOES: Writes matching contractors from the local cache to Supabase calling_lists. Returns counts + list id only.
+QUALIFY: exclude_national_chains=true. Do not drop low-permit locals.`,
       inputSchema: {
         name: z.string().optional().describe('Human list name, e.g. "Cayden Fort Worth GCs with phone"'),
         owner: z
@@ -560,7 +605,7 @@ QUALIFY: exclude_national_chains=true. Do not drop low-permit locals. Optional m
     'import_calling_list_csv',
     {
       title: 'Import an external CSV as a calling list',
-      description: `WHEN TO USE: Houston/Harris or any market not in the DFW Shovels cache; or a contractor CSV pulled from the Shovels API.
+      description: `WHEN TO USE: Cayden already has a contractor CSV. Prefer shovels_pull_calling_list for live East/West coast / any-US pulls.
 WHAT IT DOES: Parses CSV (company/contact/phone/email/city/state/zip), writes scrape_leads + calling_lists. Cap 8,000 rows. 0 Shovels credits.
 NEXT: Return list id. Then score_calling_list / query_calling_list. Do not dump rows into chat.`,
       inputSchema: {
@@ -941,9 +986,9 @@ NEXT: Run verify_sql select count(*). Confirm supabase_project matches the proje
             text: `Permit & Parcel MCP — Shovels contractors.
 Request: "${request || 'Summarize the contractor file'}"
 1) If they want to change the Shovels key: shovels_set_api_key (confirm=true). Never echo the full key.
-2) If they ask cost/credits: shovels_estimate_credits (show free pages AND paid companies)
-3) permits_contractors_summary / query/sample as needed (paginate). Use exclude_national_chains=true. Do not drop low-permit locals.
-4) save_calling_list with owner (e.g. cayden) and exclude_national_chains=true so the pull lands in Supabase
+2) Any US market (East/West coast, city, state): shovels_pull_calling_list — estimate first, then confirm=true. No timezone / TX-only gate.
+3) If they ask cost only: shovels_estimate_credits (show free pages AND paid companies)
+4) DFW cache: permits_contractors_* then save_calling_list (0 credits). Use exclude_national_chains=true.
 5) They filter later with list_calling_lists + query_calling_list (has_phone=true for dialing)
 6) verify with select count(*) — never dump all rows into chat.`,
           },
@@ -1029,7 +1074,7 @@ Request: "${request || 'Get Cayden owner cells on his latest list'}"
 3) match_texas_officers(only_unmatched=true, limit=80) until remaining_unmatched=0. Re-run with the same only_unmatched filter (offset is unused). Sole-prop CPA 400s are officer_match=none; other permanent 400s are officer_match=error. officer_match=agent is registered-agent-only (not an owner).
 4) lookup_line_type without confirm (show $), then confirm=true; re-run only_unknown until remaining_unknown=0. Omit offset. match+mobile → dial_status=owner_cell.
 5) owner_people_search for needs_enrichment. Open people-search URLs. record_owner_cell for wireless + matching address only.
-6) query_calling_list(dial_status=owner_cell). Do not dump the list. Houston/Harris CSVs go through import_calling_list_csv first.`,
+6) query_calling_list(dial_status=owner_cell). Do not dump the list. Non-DFW markets: shovels_pull_calling_list(confirm=true). CSV import only if they already have a file.`,
           },
         },
       ],

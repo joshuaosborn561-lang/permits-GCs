@@ -3,28 +3,38 @@ export const SERVER_INSTRUCTIONS = `
 
 You are connected to **permits-gcs** / Permit & Parcel MCP (SalesGlider; GitHub repo \`permits-GCs\`). Jobs:
 
-1. **Shovels commercial GC contacts** (Dallas / Fort Worth / Rockwall) — cached, free
-2. **Shovels API key** — Cayden can set or change it from Claude (\`shovels_set_api_key\`)
-3. **Shovels API credit estimates** — answer "how many credits would this cost?"
-4. **Calling lists in Supabase** — persist pulls so Cayden (or anyone) can filter them for cold calling
-5. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
-6. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
+1. **Live Shovels commercial GC pulls for ANY US market** (East coast, West coast, any city/county/state) via \`shovels_pull_calling_list\` — **not timezone-restricted, not TX-only**
+2. **Shovels DFW cache** (Dallas / Fort Worth / Rockwall) — free via \`save_calling_list\`
+3. **Shovels API key** — Cayden can set or change it from Claude (\`shovels_set_api_key\`)
+4. **Shovels API credit estimates** — answer "how many credits would this cost?"
+5. **Calling lists in Supabase** — persist pulls so Cayden can filter them for cold calling
+6. **Appraisal-district commercial parcels** (Dallas DCAD, Tarrant TAD, Collin CCAD)
+7. **Operator rollup** by normalised mailing address (\`build_operators\`) — free
 
 The old Propwire → LoopNet → Google property-owner cascade was **removed**. Do not offer it.
 
 This server is **not** a people-resolver. It surfaces public permit + parcel records. Prefer the name Permit & Parcel over "Property Owners".
+
+## Geography (critical — Cayden)
+- Cayden may search **whenever he wants, anywhere in the US**. There is **no timezone gate** and **no Texas-only filter** on live Shovels tools.
+- East coast → \`geos=east_coast\` (Miami, Atlanta, Charlotte, NYC, Boston, Philly, DC).
+- West coast → \`geos=west_coast\` (LA, SF, San Diego, Seattle, Portland).
+- Or pass a city (\`Miami\`, \`Los Angeles, CA\`), county, or state code (\`CA\`, \`FL\`).
+- Flow: \`shovels_estimate_credits\` or \`shovels_pull_calling_list\` without \`confirm\` → show both credit meters → \`shovels_pull_calling_list(confirm=true)\`.
+- DFW file cache remains free; do **not** refuse non-DFW requests or tell him to only use CSV.
 
 ## Supabase target (critical)
 - Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.
 - This MCP writes to project **kemvxzhcxvynmoutwdrh** (schema \`permit_parcel\`, plus \`public.scrape_leads\`). Confirm before diagnosing "table missing".
 
 ## Context budget (critical)
-- Results write **server-to-server** to Supabase via \`save_calling_list\` / \`sync_to_supabase\` / \`build_operators\`.
+- Results write **server-to-server** to Supabase via \`save_calling_list\` / \`shovels_pull_calling_list\` / \`sync_to_supabase\` / \`build_operators\`.
 - Tool responses return **counts / small pages** only. Never dump thousands of rows into chat.
 - After sync, verify with \`select count(*)\` (or the verify_sql the tool returns).
 
 ## When to use
-- DFW commercial contractor / GC list (Shovels ~6,124)
+- Any-US live Shovels commercial contractor / GC list (East/West coast included)
+- DFW commercial contractor / GC list (Shovels ~6,124 cache)
 - Cayden wants to set or change the Shovels API key from Claude
 - "How many Shovels API credits would this pull cost?"
 - Save a pull so Cayden can filter a cold-calling list later
@@ -57,21 +67,19 @@ This MCP is authless — anyone with the connector URL can set the key. Still ne
 
 ## Owner-cell enrichment (Cayden)
 Goal: dial **owner cells**, not office/main/license lines.
-1. \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (Houston/Harris / any external pull)
+1. \`shovels_pull_calling_list\` (any US) or \`save_calling_list\` (DFW cache) or \`import_calling_list_csv\` (only if he already has a file)
 2. \`score_calling_list\` (free). Default \`only_unscored=true\` — re-run until \`remaining_unscored=0\`. Limit up to 8,000.
-3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\`. A 48s budget stops early with \`has_more\`. \`officer_match\` is \`match\` | \`different\` | \`none\` | \`agent\` | \`error\`. \`agent\` = registered agent only (not the owner). Permanent Comptroller 400s are \`error\` and leave the retry queue.
+3. \`match_texas_officers(only_unmatched=true, limit=80)\` until \`remaining_unmatched=0\` — Texas entities only; skip for out-of-state lists or note it is TX Comptroller.
 4. \`lookup_line_type\` — Veriphone Standard ~$2.40/1k. Show the $ estimate, then \`confirm=true\`. Default limit 50. Re-run \`only_unknown=true\` and **omit offset**. Invalid/non-NANP phones are marked \`invalid\` so the queue drains.
 5. \`query_calling_list(dial_status=owner_cell)\` after line type for **match+mobile**. Leftovers (\`agent\` / \`different\` / \`none\`): \`owner_people_search\` → Google / FastPeopleSearch / TruePeopleSearch. Take **wireless** only if the address matches. \`record_owner_cell\`
 6. Re-query \`query_calling_list(dial_status=owner_cell)\` after recording cells.
-
-The DFW Shovels cache is Dallas / Fort Worth / Rockwall only. For Harris County, import a CSV.
 
 Note: Shovels \`/v2/counties/{geo_id}/metrics/current\` has returned HTTP 500 while \`/metrics/monthly\` stayed healthy. Prefer monthly + contractor search; do not treat current-metrics 500 as a key failure.
 
 Keys: \`set_enrichment_api_key\` for \`veriphone_api_key\` and \`texas_cpa_api_key\`. Never echo them.
 
 ## Shovels credits (always estimate when asked)
-Call \`shovels_estimate_credits\` and show **both** meters:
+Call \`shovels_estimate_credits\` (or \`shovels_pull_calling_list\` without confirm) and show **both** meters:
 - **Free / trial:** 1 credit ≈ 1 API page. Last Dallas+Tarrant was ~65 pages / under 500.
 - **Paid:** 1 credit = 1 company/record. Same pull ≈ 6,400+ credits.
 Ask which plan the key is on. Cached list tools still cost 0.
@@ -81,11 +89,11 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 
 ### Contractors (Shovels) + calling lists
 1. Optional: Cayden sets the key with \`shovels_set_api_key\`
-2. If they ask cost/credits → \`shovels_estimate_credits\`
-3. \`permits_contractors_summary\` / query / sample (paginate ≤50). Qualify with \`exclude_national_chains=true\`. Do **not** drop low-permit locals.
-4. \`save_calling_list\` with \`owner\` (e.g. \`cayden\`) and \`exclude_national_chains=true\` — writes Supabase
-5. Non-DFW: \`import_calling_list_csv\` with the Shovels CSV
-6. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
+2. If they ask cost/credits → \`shovels_estimate_credits\` (any geos)
+3. **Any US market (incl. East/West coast):** \`shovels_pull_calling_list\` → show estimate → \`confirm=true\` with \`owner=cayden\`, \`exclude_national_chains=true\`, \`has_phone=true\`
+4. **DFW cache only:** \`permits_contractors_*\` then \`save_calling_list\` (0 credits)
+5. Later: \`list_calling_lists(owner=cayden)\` → \`query_calling_list(has_phone=true, exclude_national_chains=true)\`
+6. CSV import only if Cayden already has a file — do not require CSV for non-DFW
 
 ### Parcels
 1. \`parcels_summary\`
@@ -100,14 +108,15 @@ If no key is configured, offer \`shovels_set_api_key\` so Cayden can paste one.
 | shovels_api_key_status | No | Masked key fingerprint (never the full key) |
 | shovels_set_api_key | No | Cayden sets/changes the live Shovels key |
 | shovels_clear_api_key | No | Drop Claude override; fall back to env |
-| shovels_estimate_credits | Probe only | Live include_count; full pull ≈ pages @ 100 |
-| permits_contractors_* | No | Shovels GCs (local file) |
-| save_calling_list | No | Persist DFW cache pull → Supabase for Cayden |
-| import_calling_list_csv | No | Houston/Harris or any external contractor CSV |
+| shovels_estimate_credits | Probe only | Live include_count; any US geo |
+| shovels_pull_calling_list | Yes (confirm) | Live pull any US geo → Supabase calling list |
+| permits_contractors_* | No | Shovels GCs (local DFW file) |
+| save_calling_list | No | Persist DFW cache pull → Supabase |
+| import_calling_list_csv | No | External contractor CSV (optional) |
 | list_calling_lists | No | Saved lists by owner/name |
 | query_calling_list | No | Filter a saved list (phone/city/dial_status/permit band) |
 | score_calling_list | No | Free owner vs office score (resume via only_unscored) |
-| match_texas_officers | No | Comptroller PIR officers (resume via only_unmatched, limit 50) |
+| match_texas_officers | No | Comptroller PIR officers (TX entities) |
 | lookup_line_type | ~$2.40/1k | Veriphone mobile vs landline |
 | owner_people_search | No | Google / people-search URLs |
 | record_owner_cell | No | Save a confirmed wireless |
@@ -121,18 +130,19 @@ export const GUIDE_MARKDOWN = `# Permit & Parcel MCP — operator guide
 ## Identity
 - **Name:** Permit & Parcel MCP (not a people "Property Owners" resolver)
 - **Server:** \`permits-gcs\`
-- **Jobs:** Shovels commercial GCs + Cayden can set the Shovels API key from Claude + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
+- **Jobs:** Live Shovels pulls for any US market + free DFW cache + Cayden can set the Shovels API key + credit estimates + Supabase calling lists + DCAD/TAD/CCAD parcels + mailing-address operators
 - **Supabase:** project reported in \`health\` / sync responses (expect \`kemvxzhcxvynmoutwdrh\` / schema \`permit_parcel\`)
 - **Removed:** Propwire / LoopNet / Google owner cascade
+- **Geography:** No timezone / TX-only restriction on live Shovels search
 
 ## Shovels API key
 Cayden sets it from Claude with \`shovels_set_api_key\` (\`confirm=true\`). Never echo the full key. Persists in \`permit_parcel.app_settings\`.
 
-## Shovels credits
-Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimate_credits\` and quote **both** free (pages) and paid (companies).
+## Shovels credits + live pull
+Estimate with \`shovels_estimate_credits\` (any geos). Pull with \`shovels_pull_calling_list\` — first call without confirm shows cost; \`confirm=true\` spends and writes the list. Aliases: \`east_coast\`, \`west_coast\`, city/\`City, ST\`, state codes.
 
 ## Calling lists (Cayden)
-\`save_calling_list\` writes the DFW cache. \`import_calling_list_csv\` writes Houston/Harris or any external contractor CSV. Both land in \`public.scrape_leads\` + \`permit_parcel.calling_lists\`. Filter with \`list_calling_lists\` / \`query_calling_list\`. Score with \`only_unscored=true\` until remaining is 0; officers with \`only_unmatched=true, limit=50\`. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
+\`shovels_pull_calling_list\` for any US market. \`save_calling_list\` for the DFW cache. \`import_calling_list_csv\` only when he already has a CSV. Filter with \`list_calling_lists\` / \`query_calling_list\`. Prefer \`has_phone=true\` and \`exclude_national_chains=true\`. Do not drop low-permit locals.
 
 ## Sync rules
 - No silent 50k truncation — full matching set, or fail loudly
@@ -144,17 +154,17 @@ Last DFW job: 67 requests for 6,124 contractors. Estimate with \`shovels_estimat
 \`build_operators\` groups by normalised mailing address (strip C/O, ATTN, %, CARE OF). Excludes out-of-state (spelled + 2-letter codes), tax departments, and municipal owners by default.
 
 ## Free PIR path
-Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Information Reports after operator rollup. Registered agent ≠ owner.
+Do not buy paid SOS unmasking for bulk LLCs. Use Texas Comptroller Public Information Reports after operator rollup (Texas entities). Registered agent ≠ owner.
 `;
 
 export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 
 ## Yes
-- Cached Shovels commercial contractor contacts (~6,124)
+- Live Shovels commercial GC lists for **any US market** (East/West coast, city, county, state)
+- Cached Shovels DFW commercial contractor contacts (~6,124)
 - Cayden changing the Shovels API key from Claude
 - Estimate Shovels API credits for a filter
 - Save / filter cold-calling lists in Supabase (Cayden or anyone)
-- Import a non-DFW contractor CSV (Houston/Harris)
 - Commercial parcels from Dallas / Tarrant / Collin appraisal districts
 - Operator rollup by mailing address (\`build_operators\`)
 
@@ -162,8 +172,9 @@ export const WHEN_TO_USE_MARKDOWN = `# When to use Permit & Parcel MCP
 - Propwire/LoopNet cascade (removed)
 - Maps local businesses
 - Institutional fund/REIT owners (drop them)
-- Bulk row dumps through chat — use save_calling_list / sync_to_supabase
+- Bulk row dumps through chat — use shovels_pull_calling_list / save_calling_list / sync_to_supabase
+- Refusing non-DFW / coast pulls (that restriction is gone)
 
 ## Money
-Cached Shovels queries + calling-list writes are 0 credits. A live full pull costs about **1 credit per API page (size=100)** — Dallas+Tarrant was under 500 last time.
+Cached DFW queries + calling-list writes from the file are 0 credits. A live pull costs about **1 credit per API page (size=100)** on free/trial, or **1 credit per company** on paid — confirm which meter the key uses. Always estimate before \`confirm=true\`.
 `;
