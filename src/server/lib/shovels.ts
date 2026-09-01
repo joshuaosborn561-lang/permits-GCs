@@ -31,9 +31,17 @@ export interface ContractorCountProbe {
   geo: ShovelsGeo;
   total_count: number;
   count_relation: string | null;
+  /** Raw total_count field from Shovels (object or number) for debugging fake "1"s. */
+  total_count_raw: unknown;
   items_on_probe: number;
+  /** Response `size` field (items returned this page). */
+  page_size_returned: number;
+  has_more: boolean;
+  next_cursor: string | null;
+  /** True when total_count looks like a size=1 artifact (1 with more pages). */
+  count_unreliable: boolean;
   headers: ShovelsHeaders;
-  /** True when Shovels returned no usable count (possible thin/no coverage). */
+  /** True when Shovels returned no usable count and empty first page. */
   no_coverage: boolean;
 }
 
@@ -359,7 +367,14 @@ export async function probeContractorCount(opts: {
   permit_from: string;
   permit_to: string;
   property_type?: string;
+  /**
+   * Probe page size. Default 1 — this account bills per *record* returned
+   * (x-credits-request ≈ size), so size=100 would burn 100 credits for one geo.
+   * include_count still returns the full {value,relation} total at size=1.
+   */
+  size?: number;
 }): Promise<ContractorCountProbe> {
+  const size = Math.min(100, Math.max(1, opts.size ?? 1));
   const { body, headers } = await shovelsGet('/contractors/search', {
     geo_id: opts.geo.geo_id,
     permit_from: opts.permit_from,
@@ -367,27 +382,42 @@ export async function probeContractorCount(opts: {
     property_type: opts.property_type || 'commercial',
     include_count: true,
     include_tallies: false,
-    size: 1,
+    size,
   });
   const rec = body as {
     total_count?: unknown;
-    count?: unknown;
-    count_relation?: string;
+    size?: unknown;
+    next_cursor?: string | null;
     items?: unknown[];
   };
-  const parsed = parseTotalCount(rec.total_count ?? rec.count);
-  // Never fall back to items.length — size=1 would report "1 contractor" for every geo.
-  const total = parsed.value;
-  const relation =
-    parsed.relation ??
-    (typeof rec.count_relation === 'string' ? rec.count_relation : null);
+  // ONLY trust total_count — never response `size` / items.length (those are the page).
+  const parsed = parseTotalCount(rec.total_count);
+  const itemsOnPage = Array.isArray(rec.items) ? rec.items.length : 0;
+  const pageSizeReturned =
+    typeof rec.size === 'number' && Number.isFinite(rec.size) ? rec.size : itemsOnPage;
+  const nextCursor = rec.next_cursor ?? null;
+  const hasMore = Boolean(nextCursor);
+  // Undeployed/old bug signature: Number({value,relation}) → NaN → items.length (often 1)
+  // while next_cursor is set. Detect when raw object was ignored.
+  const rawIsObject =
+    rec.total_count != null && typeof rec.total_count === 'object' && !Array.isArray(rec.total_count);
+  const countUnreliable =
+    rec.total_count == null ||
+    (!rawIsObject && parsed.value === 1 && hasMore) ||
+    (parsed.value === 1 && hasMore && itemsOnPage === 1 && !rawIsObject);
+
   return {
     geo: opts.geo,
-    total_count: total,
-    count_relation: relation,
-    items_on_probe: Array.isArray(rec.items) ? rec.items.length : 0,
+    total_count: parsed.value,
+    count_relation: parsed.relation ?? (hasMore && parsed.value > 0 ? 'gte' : null),
+    total_count_raw: rec.total_count ?? null,
+    items_on_probe: itemsOnPage,
+    page_size_returned: pageSizeReturned,
+    has_more: hasMore,
+    next_cursor: nextCursor,
+    count_unreliable: countUnreliable,
     headers,
-    no_coverage: total === 0,
+    no_coverage: parsed.value === 0 && !hasMore && itemsOnPage === 0,
   };
 }
 

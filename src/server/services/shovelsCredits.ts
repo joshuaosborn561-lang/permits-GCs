@@ -232,13 +232,22 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
             error: null,
             probed: true,
             total_count: probe.total_count,
+            total_count_raw: probe.total_count_raw,
             count_relation: probe.count_relation,
+            items_on_probe: probe.items_on_probe,
+            page_size_returned: probe.page_size_returned,
+            has_more: probe.has_more,
+            count_unreliable: probe.count_unreliable,
             estimated_pages: pages,
             estimated_credits: pages,
             probe_credits: probe.headers.credits_request,
             credits_remaining_after: probe.headers.credits_remaining,
             no_coverage: probe.no_coverage,
-            coverage: probe.no_coverage ? 'no_coverage' : 'ok',
+            coverage: probe.no_coverage
+              ? 'no_coverage'
+              : probe.count_unreliable
+                ? 'count_unreliable'
+                : 'ok',
             last_job_pages: hist?.pages ?? null,
             last_job_fetched: hist?.fetched ?? null,
           });
@@ -328,8 +337,10 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
     contractors: resolveOnly ? null : contractors,
     billing: {
       free_trial:
-        'This key is typically on the free/trial request-page meter (historically 1 credit ≈ 1 API page). Account may show ~500 rolling. Prefer resolve_only=true before probing a long county list.',
-      paid: 'Paid plans: 1 credit = 1 company/record returned. A size=100 page costs ~100 credits. Same DFW pull ≈ 6,124 credits.',
+        'Confirm the meter from response headers: if x-credits-request equals page size (e.g. 100 for size=100), this key is on RECORD billing — probes must stay at size=1. include_count still returns the full {value,relation} total at size=1. Prefer resolve_only=true before probing a long county list.',
+      paid: '1 credit = 1 company/record returned. A size=100 page costs ~100 credits. Same DFW pull ≈ 6,124 credits. Probes use size=1 so include_count costs ~1 credit/geo.',
+      observed_meter:
+        'Live Denton probe: size=1 → x-credits-request=1 with total_count.value=1402; size=100 → x-credits-request=100. Treat this key as record-metered.',
     },
     credits: {
       cached_query: 0,
@@ -364,9 +375,9 @@ export async function estimateShovelsCredits(q: ShovelsCreditEstimateInput = {})
       ? `Resolved ${targets.length} geo(s) with 0 probe credits. ${resolutionFailed.length} failed. Fix failures before probing.`
       : `Pull for ${places || 'default geos'}: ~${pages} pages / ~${companies} companies. ${resolutionFailed.length} resolution failure(s) were NOT probed. ${noCoverage.length} geo(s) report no_coverage (0 contractors).`,
     assistant_instructions: resolveOnly
-      ? 'Show each resolved_name / resolved_kind / resolved_geo_id. If any error, fix the geos string (use "Denton County, TX" or geo_level=county, or a ZIP list) before probing. Do not probe until resolution is clean.'
+      ? 'Show each resolved_name / resolved_kind / resolved_geo_id. If any error, fix the geos string (use "Denton County, TX" — not "Denton County; TX; …" with bare state slots — or geo_level=county, or a ZIP list) before probing. Do not probe until resolution is clean.'
       : hasShovelsApi()
-        ? 'Show BOTH free_tier_pages and paid_tier_companies, plus credits_used / credits_remaining. Call out any resolution_failed or no_coverage rows explicitly — do not treat a wrong city match as coverage. Prefer "County, ST" or ZIPs for outer-ring DFW.'
+        ? 'Show BOTH free_tier_pages and paid_tier_companies, plus credits_used / credits_remaining. Flag coverage=count_unreliable or has_more with a tiny total_count — that means include_count lied; the page sample is the floor. Prefer "County, TX" (comma before state), not "County; TX".'
         : 'No API key is configured. Offer shovels_set_api_key. Never echo the full key.',
   };
 }

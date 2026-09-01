@@ -149,18 +149,57 @@ function pushUnique(out: GeoTarget[], seen: Set<string>, t: GeoTarget) {
 }
 
 /**
+ * Claude often emits "Denton County; TX; Collin County; TX" (state on its own
+ * semicolon slot). Re-join those into "Denton County, TX" before tokenizing so
+ * we never invent a phantom geo_id for bare "TX" (which used to resolve to Azle).
+ */
+export function normalizeGeoList(raw: string): string {
+  let text = raw.trim();
+  if (!text) return text;
+  // "Denton County; TX" / "Denton County\nTX" → "Denton County, TX"
+  text = text.replace(/\b(County)\s*[;\n]+\s*([A-Za-z]{2})\b/gi, (_, c: string, st: string) => {
+    const code = st.toUpperCase();
+    return US_STATES.has(code) ? `${c}, ${code}` : `${c}; ${st}`;
+  });
+  // "Dallas; TX" (city then bare state) → "Dallas, TX"
+  text = text.replace(
+    /(^|[;\n,])\s*([A-Za-z][A-Za-z .'-]{1,40}?)\s*[;\n]+\s*([A-Za-z]{2})\b/g,
+    (full, lead: string, name: string, st: string) => {
+      const code = st.toUpperCase();
+      const n = name.trim();
+      if (!US_STATES.has(code)) return full;
+      if (n.length === 2 && US_STATES.has(n.toUpperCase())) return full;
+      if (/^\d{5}/.test(n)) return full;
+      return `${lead}${n}, ${code}`;
+    },
+  );
+  return text;
+}
+
+/**
  * Tokenize a geos string without breaking "Denton County, TX".
  * Prefer `;` / newlines; protect `Name, ST` pairs before splitting on commas.
  */
 export function tokenizeGeos(raw: string): string[] {
-  const text = raw.trim();
+  const text = normalizeGeoList(raw);
   if (!text) return [];
 
   if (/[;\n]/.test(text)) {
     return text
       .split(/[;\n]+/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      .filter((tok, i, arr) => {
+        // Drop leftover bare state codes if the previous token already carries that state
+        const st = tok.toUpperCase();
+        if (tok.length === 2 && US_STATES.has(st) && i > 0) {
+          const prev = arr[i - 1] || '';
+          if (new RegExp(`,\\s*${st}\\b`, 'i').test(prev) || /county$/i.test(prev)) {
+            return false;
+          }
+        }
+        return true;
+      });
   }
 
   // Pure zip list: 75001, 75002, 75201-1234

@@ -70,6 +70,24 @@ describe('pickGeo / geoNameMatches', () => {
 });
 
 describe('tokenizeGeos / parseGeoToken', () => {
+  it('rejoins County; TX semicolon slots (no phantom TX → Azle)', () => {
+    const tokens = tokenizeGeos(
+      'Denton County; TX; Collin County; TX; Ellis County; TX; Johnson County; TX',
+    );
+    assert.deepEqual(tokens, [
+      'Denton County, TX',
+      'Collin County, TX',
+      'Ellis County, TX',
+      'Johnson County, TX',
+    ]);
+    const targets = resolveGeoTargets({
+      geos: 'Denton County; TX; Collin County; TX; Hunt County; TX',
+    });
+    assert.equal(targets.length, 3);
+    assert.ok(targets.every((t) => t.kind === 'county' && t.state === 'TX'));
+    assert.ok(!targets.some((t) => t.kind === 'state' || t.q === 'TX'));
+  });
+
   it('keeps Denton County, TX intact', () => {
     const tokens = tokenizeGeos('Denton County, TX; Collin County, TX');
     assert.deepEqual(tokens, ['Denton County, TX', 'Collin County, TX']);

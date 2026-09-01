@@ -479,8 +479,8 @@ RULES: confirm must be true. Never echo any key.`,
     {
       title: 'Estimate Shovels API credits',
       description: `WHEN TO USE: Credit estimate OR geo resolution check for any US market.
-WHAT IT DOES: Resolves EVERY geo first (county/city/zip/state). Failures are listed and NOT probed (saves credits). Then include_count probes clean geos. Returns free_tier_pages + paid_tier_companies + credits_used/remaining. Use resolve_only=true for free reconnaissance.
-RULES: Prefer "Denton County, TX; Collin County, TX" or a ZIP list. Bare "Hunt" used to silently become "Hunt, Kerr, TX" — now DFW-ring county aliases + geo_level=county + "County" suffix prevent that. total_count is parsed from {value,relation} (no more fake "1 contractor").
+WHAT IT DOES: Resolves EVERY geo first (county/city/zip/state). Failures are listed and NOT probed (saves credits). Then include_count probes clean geos at size=1 (this key bills per record — size=100 would cost 100). Returns free_tier_pages + paid_tier_companies + credits_used/remaining + total_count_raw. Use resolve_only=true for free reconnaissance.
+RULES: Prefer "Denton County, TX; Collin County, TX" (comma before state). "Denton County; TX; Collin…" used to invent a phantom TX geo. total_count is {value,relation} — never page size.
 NEXT: Show resolution table. Fix failures. Then pull with shovels_pull_calling_list.`,
       inputSchema: {
         geos: z
