@@ -17,13 +17,15 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 
 ## Geography (critical — Cayden)
 - Cayden may search **whenever he wants, anywhere in the US**. There is **no timezone gate** and **no Texas-only filter** on live Shovels tools.
-- **Counties:** pass \`"Denton County, TX; Collin County, TX"\` (semicolons) or \`geo_level=county\`. Bare DFW-ring names (Hunt, Collin, …) map to counties — never to a random city inside another county.
-- **ZIPs:** \`"75001;75035;75201"\` resolve as geo_ids directly (unambiguous escape hatch).
-- **resolve_only=true** on \`shovels_estimate_credits\` maps geos with **0 probe credits** — use before a long county list.
+- **Live pull:** \`shovels_pull\` fetches from the Shovels API into the same store \`permits_contractors_query\` / \`save_calling_list\` read. Until you pull, that store is Dallas / Fort_Worth / Rockwall_County only — other places return 0 matched, not "no coverage".
+- \`max_records\` is required and checked **before** each request. \`dry_run=true\` resolves geos with 0 credits. Cursors persist in \`pull_state.json\` for resume after restart.
+- Prefer \`page_size=100\` on trial keys (1 request per page). On record-metered keys, estimate first at size=1.
+- **Counties:** pass \`"Denton County, TX; Collin County, TX"\` (semicolons between geos, comma before state). Bare DFW-ring names (Hunt, Collin, …) map to counties.
+- **ZIPs:** \`"75001;75035;75201"\` resolve as geo_ids directly.
+- **resolve_only=true** on \`shovels_estimate_credits\` maps geos with **0 probe credits**.
 - East coast → \`geos=east_coast\`. West coast → \`geos=west_coast\`.
-- Flow: resolve_only → show resolved_name/kind → estimate → \`shovels_pull_calling_list(confirm=true)\`.
-- DFW file cache remains free; do **not** refuse non-DFW requests or tell him to only use CSV.
-- A \`coverage=no_coverage\` / \`total_count=0\` after a **correct** county resolve is a valid answer (thin Shovels coverage), not a geo bug.
+- Flow: resolve_only / dry_run → estimate → \`shovels_pull\` → \`permits_contractors_query(place=…)\`.
+- A \`coverage=no_coverage\` after a **correct** county resolve is a valid answer (thin Shovels coverage).
 
 ## Supabase target (critical)
 - Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.

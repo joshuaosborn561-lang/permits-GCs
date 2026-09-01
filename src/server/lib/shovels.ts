@@ -463,6 +463,47 @@ export function mapShovelsApiContractor(raw: Record<string, unknown>, placeTag: 
   };
 }
 
+export async function shovelsSearchContractorsPage(opts: {
+  geo_id: string;
+  permit_from: string;
+  permit_to: string;
+  property_type?: string;
+  size: number;
+  cursor?: string | null;
+  include_count?: boolean;
+}): Promise<{
+  items: Record<string, unknown>[];
+  next_cursor: string | null;
+  total_count_raw: unknown;
+  headers: ShovelsHeaders;
+}> {
+  const query: Record<string, string | number | boolean | undefined> = {
+    geo_id: opts.geo_id,
+    permit_from: opts.permit_from,
+    permit_to: opts.permit_to,
+    property_type: opts.property_type || 'commercial',
+    include_count: opts.include_count === true,
+    include_tallies: false,
+    size: opts.size,
+  };
+  if (opts.cursor) query.cursor = opts.cursor;
+  const { body, headers } = await shovelsGet('/contractors/search', query);
+  const rec = body as {
+    items?: unknown[];
+    next_cursor?: string | null;
+    total_count?: unknown;
+  };
+  const items = Array.isArray(rec.items)
+    ? rec.items.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === 'object')
+    : [];
+  return {
+    items,
+    next_cursor: rec.next_cursor ?? null,
+    total_count_raw: rec.total_count ?? null,
+    headers,
+  };
+}
+
 export async function pullContractorsForGeo(opts: {
   geo: ShovelsGeo;
   place: string;
@@ -472,6 +513,11 @@ export async function pullContractorsForGeo(opts: {
   page_size?: number;
   max_records?: number;
   max_pages?: number;
+  /** Resume from a stored cursor (skips include_count on first page). */
+  start_cursor?: string | null;
+  /** Abort if credits_remaining drops below this after a page. */
+  min_credits_remaining?: number;
+  fetchPage?: typeof shovelsSearchContractorsPage;
 }): Promise<{
   items: ShovelsApiContractor[];
   pages: number;
@@ -479,53 +525,91 @@ export async function pullContractorsForGeo(opts: {
   truncated: boolean;
   next_cursor: string | null;
   headers_last: ShovelsHeaders | null;
+  stopped_reason: 'complete' | 'max_records' | 'credit_floor' | 'empty' | null;
 }> {
   const pageSize = Math.min(100, Math.max(1, opts.page_size ?? 100));
   const maxRecords = Math.max(1, opts.max_records ?? 2000);
-  const maxPages = Math.max(1, opts.max_pages ?? 100);
+  const maxPages = Math.max(1, opts.max_pages ?? 500);
+  const minCredits = opts.min_credits_remaining ?? 0;
+  const fetchPage = opts.fetchPage ?? shovelsSearchContractorsPage;
   const items: ShovelsApiContractor[] = [];
-  let cursor: string | null = null;
+  let cursor: string | null = opts.start_cursor ?? null;
   let pages = 0;
   let credits = 0;
   let headersLast: ShovelsHeaders | null = null;
   let truncated = false;
+  let stopped: 'complete' | 'max_records' | 'credit_floor' | 'empty' | null = null;
+  let first = true;
 
-  while (items.length < maxRecords && pages < maxPages) {
-    const query: Record<string, string | number | boolean | undefined> = {
+  while (pages < maxPages) {
+    // Hard stop BEFORE spending another request.
+    if (items.length >= maxRecords) {
+      truncated = true;
+      stopped = 'max_records';
+      break;
+    }
+    const remaining = maxRecords - items.length;
+    const size = Math.min(pageSize, remaining);
+    if (size <= 0) {
+      truncated = true;
+      stopped = 'max_records';
+      break;
+    }
+
+    const page = await fetchPage({
       geo_id: opts.geo.geo_id,
       permit_from: opts.permit_from,
       permit_to: opts.permit_to,
-      property_type: opts.property_type || 'commercial',
-      include_count: pages === 0,
-      include_tallies: false,
-      size: Math.min(pageSize, maxRecords - items.length),
-    };
-    if (cursor) query.cursor = cursor;
-
-    const { body, headers } = await shovelsGet('/contractors/search', query);
-    headersLast = headers;
-    credits += headers.credits_request ?? 0;
+      property_type: opts.property_type,
+      size,
+      cursor,
+      include_count: first && !opts.start_cursor,
+    });
+    first = false;
+    headersLast = page.headers;
+    credits += page.headers.credits_request ?? 0;
     pages += 1;
 
-    const rec = body as { items?: unknown[]; next_cursor?: string | null };
-    const batch = Array.isArray(rec.items) ? rec.items : [];
-    for (const raw of batch) {
-      if (!raw || typeof raw !== 'object') continue;
-      const mapped = mapShovelsApiContractor(raw as Record<string, unknown>, opts.place);
+    if (
+      page.headers.credits_remaining != null &&
+      page.headers.credits_remaining < minCredits
+    ) {
+      // Still keep whatever we got on this page, then stop.
+      for (const raw of page.items) {
+        const mapped = mapShovelsApiContractor(raw, opts.place);
+        if (!mapped.id) continue;
+        items.push(mapped);
+        if (items.length >= maxRecords) break;
+      }
+      cursor = page.next_cursor;
+      truncated = true;
+      stopped = 'credit_floor';
+      break;
+    }
+
+    for (const raw of page.items) {
+      const mapped = mapShovelsApiContractor(raw, opts.place);
       if (!mapped.id) continue;
       items.push(mapped);
       if (items.length >= maxRecords) break;
     }
 
-    cursor = rec.next_cursor ?? null;
-    if (!cursor || !batch.length) break;
+    cursor = page.next_cursor;
+    if (!cursor || !page.items.length) {
+      stopped = page.items.length ? 'complete' : items.length ? 'complete' : 'empty';
+      break;
+    }
     if (items.length >= maxRecords) {
       truncated = true;
+      stopped = 'max_records';
       break;
     }
   }
 
-  if (cursor && items.length >= maxRecords) truncated = true;
+  if (!stopped && cursor) {
+    truncated = true;
+    stopped = 'max_records';
+  }
 
   return {
     items,
@@ -534,5 +618,6 @@ export async function pullContractorsForGeo(opts: {
     truncated,
     next_cursor: cursor,
     headers_last: headersLast,
+    stopped_reason: stopped,
   };
 }

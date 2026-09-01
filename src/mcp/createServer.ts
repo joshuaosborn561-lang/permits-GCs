@@ -36,6 +36,7 @@ import {
 } from '../server/services/parcels.js';
 import { estimateShovelsCredits } from '../server/services/shovelsCredits.js';
 import { pullShovelsCallingList } from '../server/services/pullShovelsCallingList.js';
+import { shovelsPull } from '../server/services/shovelsPull.js';
 import {
   contractorsToCsv,
   getShovelsContractor,
@@ -69,7 +70,7 @@ const placeFilter = z
   .min(1)
   .optional()
   .describe(
-    'Geography tag. Cache tools: Dallas | Fort_Worth | Rockwall_County. Live tools (shovels_pull_calling_list / estimate): any US city, county, state code, or east_coast / west_coast.',
+    'Geography tag. Cache tools: Dallas | Fort_Worth | Rockwall_County. Live tools (shovels_pull / estimate / shovels_pull_calling_list): any US city, county, state code, or east_coast / west_coast.',
   );
 
 const countyEnum = z.enum(['Dallas', 'Tarrant', 'Collin']).optional();
@@ -116,7 +117,7 @@ async function healthPayload() {
     when_not_to_use:
       'Propwire/LoopNet cascade (removed), Maps scrapes, institutional REIT/fund owners, paid SOS unmasking, bulk row dumps in chat.',
     how_to_use:
-      'Any US geo anytime via shovels_pull_calling_list (east_coast/west_coast/city/state). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers → lookup_line_type → owner_people_search. Never echo API keys.',
+      'Live: shovels_pull into the contractor store (then permits_contractors_query). DFW cache still free via save_calling_list. Enrich: score → match_texas_officers → lookup_line_type → owner_people_search. Never echo API keys.',
     removed:
       'pmf_parse_query, pmf_confirm_run, Propwire → LoopNet → Google owner cascade (broken; not repaired).',
   };
@@ -511,6 +512,53 @@ NEXT: Show resolution table. Fix failures. Then pull with shovels_pull_calling_l
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async (args) => jsonResult(await estimateShovelsCredits(args)),
+  );
+
+  server.registerTool(
+    'shovels_pull',
+    {
+      title: 'Live Shovels pull → local contractor store',
+      description: `WHEN TO USE: Fetch live Shovels contractors for a geo (e.g. Denton County) into the same store permits_contractors_query / save_calling_list read. Cache is Dallas/Fort_Worth/Rockwall only until you pull.
+WHAT IT DOES: Resolves geos, paginates with next_cursor, upserts by Shovels id (unions places), returns COUNTS only. max_records is a hard stop checked before each request. dry_run=true resolves only (0 credits). Cursors persist in pull_state.json for resume after restart.
+RULES: max_records required. Prefer page_size=100 on trial (1 request/page). On record-metered keys size≈credits — still use include_count probes at size=1 via estimate first. Never dump rows.
+NEXT: permits_contractors_query(place="Denton_County") / save_calling_list.`,
+      inputSchema: {
+        geos: z
+          .string()
+          .optional()
+          .describe('Prefer "Denton County, TX; Collin County, TX" (comma before state).'),
+        place: placeFilter,
+        city: z.string().optional(),
+        state: z.string().optional(),
+        geo_level: z.enum(['auto', 'city', 'county', 'zip', 'state']).optional(),
+        property_type: z.string().optional().describe("Default 'commercial'"),
+        date_from: z.string().optional(),
+        date_to: z.string().optional(),
+        page_size: z.number().int().min(1).max(100).optional().describe('Default 100'),
+        max_records: z
+          .number()
+          .int()
+          .min(1)
+          .max(50000)
+          .describe('Hard ceiling — required. Checked before each API request.'),
+        dry_run: z.boolean().optional().describe('true = resolve only, 0 credits'),
+        min_credits_remaining: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('Abort if remaining drops below this (default 5)'),
+        reset_cursor: z.boolean().optional().describe('Ignore saved cursors and start fresh'),
+      },
+      annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
+    },
+    async (args) => {
+      try {
+        return jsonResult(await shovelsPull(args));
+      } catch (err) {
+        return errorResult(err instanceof Error ? err.message : 'shovels_pull failed');
+      }
+    },
   );
 
   server.registerTool(

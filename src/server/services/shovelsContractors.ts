@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { isNationalChain, nationalChainHit } from '../lib/nationalChain.js';
 
@@ -55,9 +55,17 @@ export interface ContractorQueryResult {
 
 let cache: ShovelsContractor[] | null = null;
 let loadError: string | null = null;
+let dataDirOverride: string | null = null;
+
+/** Test-only: point the contractor store at a temp directory. */
+export function setContractorsDataDirForTests(dir: string | null): void {
+  dataDirOverride = dir;
+  cache = null;
+  loadError = null;
+}
 
 function dataDir(): string {
-  return join(process.cwd(), 'data', 'shovels_commercial_contractors');
+  return dataDirOverride ?? join(process.cwd(), 'data', 'shovels_commercial_contractors');
 }
 
 /** RFC4180-ish CSV parse (handles quotes and commas inside fields). */
@@ -207,6 +215,157 @@ export function loadShovelsContractors(force = false): ShovelsContractor[] {
   cache = out;
   loadError = null;
   return cache;
+}
+
+export function invalidateShovelsContractorCache(): void {
+  cache = null;
+}
+
+export function contractorsDataDir(): string {
+  return dataDir();
+}
+
+export function contractorsStorePath(): string {
+  return join(dataDir(), 'commercial_contractors_contacts.csv');
+}
+
+function mergePlaces(a: string[], b: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of [...a, ...b]) {
+    const key = p.trim();
+    if (!key) continue;
+    const low = key.toLowerCase();
+    if (seen.has(low)) continue;
+    seen.add(low);
+    out.push(key);
+  }
+  return out;
+}
+
+function prefer(a: string | null, b: string | null): string | null {
+  return a && a.trim() ? a : b && b.trim() ? b : a ?? b ?? null;
+}
+
+/**
+ * Upsert live-pull rows into the on-disk contractor store that
+ * permits_contractors_query / save_calling_list read. Dedupes on Shovels id
+ * and unions `places` so Denton_County appears alongside Dallas.
+ */
+export function upsertShovelsContractorsIntoStore(
+  incoming: ShovelsContractor[],
+): {
+  written: number;
+  inserted: number;
+  updated: number;
+  duplicates_skipped: number;
+  total_after: number;
+  path: string;
+} {
+  const existing = loadShovelsContractors(true);
+  const byId = new Map<string, ShovelsContractor>();
+  for (const row of existing) byId.set(row.id, { ...row, places: [...row.places] });
+
+  let inserted = 0;
+  let updated = 0;
+  let duplicatesSkipped = 0;
+
+  for (const row of incoming) {
+    if (!row.id) continue;
+    const prev = byId.get(row.id);
+    if (!prev) {
+      byId.set(row.id, { ...row, places: [...row.places] });
+      inserted += 1;
+      continue;
+    }
+    const places = mergePlaces(prev.places, row.places);
+    const placeOnlyUpdate =
+      places.length === prev.places.length &&
+      places.every((p, i) => p.toLowerCase() === (prev.places[i] || '').toLowerCase());
+    // Same id already present for this place → skip counting as write noise
+    const alreadyHadPlace = row.places.every((p) =>
+      prev.places.some((x) => x.toLowerCase() === p.toLowerCase()),
+    );
+    if (alreadyHadPlace) {
+      duplicatesSkipped += 1;
+      continue;
+    }
+    byId.set(row.id, {
+      ...prev,
+      name: prefer(row.name, prev.name),
+      business_name: prefer(row.business_name, prev.business_name),
+      dba: prefer(row.dba, prev.dba),
+      phone: prefer(row.phone, prev.phone),
+      primary_phone: prefer(row.primary_phone, prev.primary_phone),
+      email: prefer(row.email, prev.email),
+      primary_email: prefer(row.primary_email, prev.primary_email),
+      website: prefer(row.website, prev.website),
+      linkedin_url: prefer(row.linkedin_url, prev.linkedin_url),
+      employee_count: prefer(row.employee_count, prev.employee_count),
+      address_street: prefer(row.address_street, prev.address_street),
+      address_city: prefer(row.address_city, prev.address_city),
+      address_state: prefer(row.address_state, prev.address_state),
+      address_zip: prefer(row.address_zip, prev.address_zip),
+      places,
+      permit_count: row.permit_count ?? prev.permit_count,
+      total_job_value: row.total_job_value ?? prev.total_job_value,
+      primary_industry: prefer(row.primary_industry, prev.primary_industry),
+      business_type: prefer(row.business_type, prev.business_type),
+    });
+    updated += 1;
+    void placeOnlyUpdate;
+  }
+
+  const merged = [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
+  const dir = dataDir();
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const path = join(dir, 'commercial_contractors_contacts.csv');
+  writeFileSync(path, contractorsToCsv(merged) + '\n', 'utf8');
+
+  const byPlace: Record<string, number> = {};
+  for (const c of merged) {
+    for (const p of c.places) byPlace[p] = (byPlace[p] || 0) + 1;
+  }
+  const summaryPath = join(dir, 'summary.json');
+  let prevSummary: Record<string, unknown> = {};
+  if (existsSync(summaryPath)) {
+    try {
+      prevSummary = JSON.parse(readFileSync(summaryPath, 'utf8')) as Record<string, unknown>;
+    } catch {
+      prevSummary = {};
+    }
+  }
+  writeFileSync(
+    summaryPath,
+    JSON.stringify(
+      {
+        ...prevSummary,
+        unique_contractors: merged.length,
+        places: byPlace,
+        last_store_upsert_at: new Date().toISOString(),
+        last_store_upsert: {
+          inserted,
+          updated,
+          duplicates_skipped: duplicatesSkipped,
+          incoming: incoming.length,
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  cache = merged;
+  loadError = null;
+  return {
+    written: inserted + updated,
+    inserted,
+    updated,
+    duplicates_skipped: duplicatesSkipped,
+    total_after: merged.length,
+    path,
+  };
 }
 
 function matches(c: ShovelsContractor, q: ContractorQuery): boolean {
