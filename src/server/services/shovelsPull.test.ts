@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { resolveShovelsGeo } from '../lib/shovels.js';
 import { tokenizeGeos } from './shovelsGeoTargets.js';
 import {
   loadShovelsContractors,
@@ -81,6 +82,30 @@ describe('shovels_pull store integration (fixtures only — no live API)', () =>
   it('delimiter: Denton County, TX; Collin County, TX → exactly two geos, no Azle', () => {
     const tokens = tokenizeGeos('Denton County, TX; Collin County, TX');
     assert.deepEqual(tokens, ['Denton County, TX', 'Collin County, TX']);
+  });
+
+  it('dry_run Denton County, TX + geo_level=county uses recorded search fixture (0 credits)', async () => {
+    const fixture = JSON.parse(
+      readFileSync(join(process.cwd(), 'data/shovels_fixtures/counties_search_denton.json'), 'utf8'),
+    ) as { items: Array<{ geo_id?: string; name?: string; state?: string }> };
+    const before = loadShovelsContractors(true).length;
+    const result = await shovelsPull({
+      geos: 'Denton County, TX',
+      geo_level: 'county',
+      max_records: 30,
+      dry_run: true,
+      resolveGeo: (opts) => resolveShovelsGeo({ ...opts, searchItems: fixture.items }),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.dry_run, true);
+    assert.equal(result.spends_shovels_credits, false);
+    assert.equal(result.records_fetched, 0);
+    assert.equal(result.requests_used, 0);
+    assert.equal(loadShovelsContractors(true).length, before);
+    const geos = result.geos as Array<{ resolved_geo_id: string; resolved_kind: string; ok: boolean }>;
+    assert.equal(geos[0]!.ok, true);
+    assert.equal(geos[0]!.resolved_geo_id, '63FDGkZW8pk');
+    assert.equal(geos[0]!.resolved_kind, 'county');
   });
 
   it('dry_run resolves without fetching or writing', async () => {
