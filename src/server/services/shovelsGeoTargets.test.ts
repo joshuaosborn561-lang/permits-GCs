@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { geoNameMatches, parseTotalCount, pickGeo } from '../lib/shovels.js';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { geoNameMatches, parseTotalCount, pickGeo, resolveShovelsGeo } from '../lib/shovels.js';
 import { parseGeoToken, resolveGeoTargets, tokenizeGeos } from './shovelsGeoTargets.js';
 
 describe('parseTotalCount', () => {
@@ -33,6 +35,18 @@ describe('pickGeo / geoNameMatches', () => {
     assert.equal(geo?.state, 'FL');
   });
 
+  it('accepts Shovels county names that omit County (Denton, TX)', () => {
+    assert.equal(geoNameMatches('Denton, TX', 'county', 'Denton', 'TX'), true);
+    assert.equal(geoNameMatches('Denton, TX', 'county', 'Denton County', 'TX'), true);
+    assert.equal(geoNameMatches('Orleans, LA', 'county', 'Orleans Parish', 'LA'), true);
+    const fixture = JSON.parse(
+      readFileSync(join(process.cwd(), 'data/shovels_fixtures/counties_search_denton.json'), 'utf8'),
+    ) as { items: Array<{ geo_id?: string; name?: string; state?: string }> };
+    const geo = pickGeo(fixture.items, 'county', 'Denton', 'TX');
+    assert.equal(geo?.geo_id, '63FDGkZW8pk');
+    assert.equal(geo?.kind, 'county');
+  });
+
   it('county pick rejects city-inside-other-county hits', () => {
     const geo = pickGeo(
       [
@@ -55,6 +69,39 @@ describe('pickGeo / geoNameMatches', () => {
       'TX',
     );
     assert.equal(geo, null);
+  });
+
+  it('resolveShovelsGeo uses recorded Denton county fixture (no live API)', async () => {
+    const fixture = JSON.parse(
+      readFileSync(join(process.cwd(), 'data/shovels_fixtures/counties_search_denton.json'), 'utf8'),
+    ) as { items: Array<{ geo_id?: string; name?: string; state?: string }> };
+    const geo = await resolveShovelsGeo({
+      kind: 'county',
+      q: 'Denton',
+      state: 'TX',
+      searchItems: fixture.items,
+    });
+    assert.equal(geo.geo_id, '63FDGkZW8pk');
+    assert.equal(geo.kind, 'county');
+    assert.equal(geo.state, 'TX');
+  });
+
+  it('county refusal hint does not tell the caller to pass geo_level=county', async () => {
+    await assert.rejects(
+      () =>
+        resolveShovelsGeo({
+          kind: 'county',
+          q: 'Sherman',
+          state: 'TX',
+          searchItems: [{ geo_id: 'bad', name: 'Texhoma, Sherman, TX', state: 'TX' }],
+        }),
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        assert.match(msg, /already county/i);
+        assert.doesNotMatch(msg, /geo_level=county/);
+        return true;
+      },
+    );
   });
 
   it('city pick rejects Collin → Anna, Collin, TX', () => {

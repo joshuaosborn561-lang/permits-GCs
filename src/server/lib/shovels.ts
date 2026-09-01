@@ -192,6 +192,18 @@ function norm(s: string): string {
   return s.toLowerCase().replace(/\s+/g, ' ').trim();
 }
 
+const ADMIN_UNIT = /\b(county|parish|borough)\b/gi;
+
+/** Strip County/Parish/Borough plus a trailing state suffix so "Denton, TX" == "Denton County". */
+export function normalizeAdminGeoName(s: string): string {
+  return norm(s)
+    .replace(/,\s*[a-z]{2}$/i, '')
+    .replace(ADMIN_UNIT, ' ')
+    .replace(/[.,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** True when resolved name is a legitimate match for the requested needle+kind. */
 export function geoNameMatches(
   resolvedName: string,
@@ -202,7 +214,6 @@ export function geoNameMatches(
   const name = norm(resolvedName);
   const want = norm(needle);
   if (!want) return false;
-  const st = state?.trim().toUpperCase();
 
   if (kind === 'zip') {
     const digits = want.replace(/\D/g, '').slice(0, 5);
@@ -212,19 +223,17 @@ export function geoNameMatches(
     return name === want || name.startsWith(`${want},`) || name === want.toLowerCase();
   }
   if (kind === 'county') {
-    // Accept "Denton County, TX" or "Denton County"
-    const countyForm = `${want} county`;
-    if (!(name === countyForm || name.startsWith(`${countyForm},`) || name.startsWith(`${countyForm} `))) {
-      // Also allow exact "Denton, TX" only if the API labels it as county in the name
-      if (!(/\bcounty\b/.test(name) && (name.startsWith(`${want},`) || name.startsWith(`${want} `)))) {
-        return false;
-      }
-    }
-    if (st && !name.includes(`, ${st.toLowerCase()}`) && !name.endsWith(` ${st.toLowerCase()}`)) {
-      // state field may still match even if name omits it
-      return true; // state checked separately via item.state
-    }
-    return true;
+    // Shovels county search returns "Denton, TX" (no "County"). Compare cores.
+    // Reject city-in-other-county hits: "Hunt, Kerr, TX" / "Texhoma, Sherman, TX".
+    const commaParts = name
+      .replace(/,\s*[a-z]{2}$/i, '')
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (commaParts.length >= 2) return false;
+    const wantCore = normalizeAdminGeoName(needle);
+    const nameCore = normalizeAdminGeoName(resolvedName);
+    return Boolean(wantCore) && nameCore === wantCore;
   }
   // city: first segment must equal the needle (rejects "Anna, Collin, TX" for needle "Collin")
   const first = name.split(',')[0]?.trim() || '';
@@ -261,12 +270,11 @@ export function pickGeo(
 
   let hit: (typeof items)[number] | undefined;
   if (kind === 'county') {
+    const matches = pool.filter((i) => geoNameMatches(i.name || '', 'county', needle, state));
     hit =
-      pool.find((i) => nameOf(i) === `${want} county`) ||
-      pool.find((i) => nameOf(i) === `${want} county, ${wantState?.toLowerCase() || ''}`) ||
-      pool.find((i) => nameOf(i).startsWith(`${want} county,`)) ||
-      pool.find((i) => nameOf(i).startsWith(`${want} county`)) ||
-      pool.find((i) => /\bcounty\b/.test(nameOf(i)) && geoNameMatches(i.name || '', 'county', needle, state));
+      matches.find((i) => /\b(county|parish|borough)\b/.test(nameOf(i))) ||
+      matches.find((i) => nameOf(i) === `${want}, ${(wantState || '').toLowerCase()}`) ||
+      matches[0];
   } else if (kind === 'zip') {
     const digits = needle.replace(/\D/g, '').slice(0, 5);
     hit =
@@ -294,11 +302,23 @@ export function pickGeo(
   };
 }
 
+function countyRefusalHint(kind: GeoKind, q: string, state?: string): string {
+  if (kind === 'county') {
+    return (
+      ' Refusing to probe — requested kind is already county. ' +
+      'Shovels county names omit "County"; a hit like "Denton, TX" is Denton County when the normalized name and state match.'
+    );
+  }
+  return ` Refusing to probe. Pass an explicit level (e.g. "${q} County, ${state || 'TX'}" or geo_level=county).`;
+}
+
 export async function resolveShovelsGeo(opts: {
   kind: GeoKind;
   q: string;
   /** Optional 2-letter state to disambiguate city/county names nationwide. */
   state?: string;
+  /** Recorded search hits — tests must pass this instead of calling the live API. */
+  searchItems?: Array<{ geo_id?: string; name?: string; state?: string }>;
 }): Promise<ShovelsGeo> {
   const q = opts.q.trim();
   if (!q) throw new GeoResolutionError('Empty Shovels geo query', { ...opts });
@@ -323,19 +343,21 @@ export async function resolveShovelsGeo(opts: {
   const path =
     opts.kind === 'county' ? '/counties/search' : opts.kind === 'city' ? '/cities/search' : '/cities/search';
 
-  let body: unknown;
-  try {
-    ({ body } = await shovelsGet(path, { q }));
-  } catch (err) {
-    throw new GeoResolutionError(
-      err instanceof Error ? err.message : String(err),
-      { kind: opts.kind, q, state: opts.state },
-    );
+  let items: Array<{ geo_id?: string; name?: string; state?: string }> = opts.searchItems ?? [];
+  if (!opts.searchItems) {
+    let body: unknown;
+    try {
+      ({ body } = await shovelsGet(path, { q }));
+    } catch (err) {
+      throw new GeoResolutionError(
+        err instanceof Error ? err.message : String(err),
+        { kind: opts.kind, q, state: opts.state },
+      );
+    }
+    items = Array.isArray((body as { items?: unknown[] })?.items)
+      ? ((body as { items: Array<{ geo_id?: string; name?: string; state?: string }> }).items)
+      : [];
   }
-
-  const items = Array.isArray((body as { items?: unknown[] })?.items)
-    ? ((body as { items: Array<{ geo_id?: string; name?: string; state?: string }> }).items)
-    : [];
 
   const pickKind = opts.kind === 'county' ? 'county' : 'city';
   const geo = pickGeo(items, pickKind, q, opts.state);
@@ -345,7 +367,7 @@ export async function resolveShovelsGeo(opts: {
     throw new GeoResolutionError(
       `No Shovels ${opts.kind} match for "${q}"${opts.state ? ` (${opts.state})` : ''}` +
         (top.length ? ` — top hits were: ${top.join(' | ')}` : ' — empty search result') +
-        `. Refusing to probe. Pass an explicit level (e.g. "${q} County, ${opts.state || 'TX'}" or geo_level=county).`,
+        `.${countyRefusalHint(opts.kind, q, opts.state)}`,
       { kind: opts.kind, q, state: opts.state },
       top.length ? { top_hits: top } : null,
     );

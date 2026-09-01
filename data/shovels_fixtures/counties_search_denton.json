@@ -1,0 +1,11 @@
+{
+  "recorded_from": "GET /counties/search?q=Denton",
+  "note": "Shovels county names omit the County suffix. Denton, TX at kind=county is Denton County.",
+  "items": [
+    {
+      "geo_id": "63FDGkZW8pk",
+      "name": "Denton, TX",
+      "state": "TX"
+    }
+  ]
+}
