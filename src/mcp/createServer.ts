@@ -478,23 +478,32 @@ RULES: confirm must be true. Never echo any key.`,
     'shovels_estimate_credits',
     {
       title: 'Estimate Shovels API credits',
-      description: `WHEN TO USE: User asks how many Shovels API credits a contractor pull would cost (any US market).
-WHAT IT DOES: Probes Shovels include_count and returns TWO estimates: free_tier_pages and paid_tier_companies. Default geos = Dallas + Tarrant. Accepts east_coast, west_coast, city names, counties, or state codes (CA, FL, …). No timezone restriction.
-NEXT: Show both numbers. To actually pull, use shovels_pull_calling_list. Cached save_calling_list (DFW file) still costs 0.`,
+      description: `WHEN TO USE: Credit estimate OR geo resolution check for any US market.
+WHAT IT DOES: Resolves EVERY geo first (county/city/zip/state). Failures are listed and NOT probed (saves credits). Then include_count probes clean geos. Returns free_tier_pages + paid_tier_companies + credits_used/remaining. Use resolve_only=true for free reconnaissance.
+RULES: Prefer "Denton County, TX; Collin County, TX" or a ZIP list. Bare "Hunt" used to silently become "Hunt, Kerr, TX" — now DFW-ring county aliases + geo_level=county + "County" suffix prevent that. total_count is parsed from {value,relation} (no more fake "1 contractor").
+NEXT: Show resolution table. Fix failures. Then pull with shovels_pull_calling_list.`,
       inputSchema: {
         geos: z
           .string()
           .optional()
-          .describe('Comma list or alias: Dallas, Miami, east_coast, west_coast, CA, "Los Angeles, CA". Default Dallas+Tarrant'),
+          .describe('Prefer semicolons: "Denton County, TX; Collin County, TX" or ZIPs "75001;75035". Also east_coast/west_coast aliases.'),
         place: placeFilter,
         city: z.string().optional(),
+        geo_level: z
+          .enum(['auto', 'city', 'county', 'zip', 'state'])
+          .optional()
+          .describe('Force level for every token. Use county for outer-ring DFW lists.'),
+        resolve_only: z
+          .boolean()
+          .optional()
+          .describe('true = resolve geos only, spend 0 probe credits'),
         date_from: z.string().optional().describe('YYYY-MM-DD, default last 12 months'),
         date_to: z.string().optional().describe('YYYY-MM-DD'),
         property_type: z.string().optional().describe("Default 'commercial'"),
         page_size: z.number().int().min(1).max(100).optional().describe('Default 100 (last DFW job)'),
         max_records: z.number().int().min(1).optional(),
         q: z.string().optional(),
-        state: z.string().optional(),
+        state: z.string().optional().describe('Default state disambiguator, e.g. TX'),
         has_email: z.boolean().optional(),
         has_phone: z.boolean().optional(),
         has_website: z.boolean().optional(),
@@ -516,10 +525,11 @@ NEXT: list_calling_lists / query_calling_list / score_calling_list.`,
         geos: z
           .string()
           .optional()
-          .describe('e.g. east_coast, west_coast, Miami, "Los Angeles, CA", CA, Atlanta,FL'),
+          .describe('Prefer "Denton County, TX; Collin County, TX" or ZIPs. east_coast/west_coast ok.'),
         place: placeFilter,
         city: z.string().optional(),
         state: z.string().optional().describe('Optional 2-letter state disambiguator'),
+        geo_level: z.enum(['auto', 'city', 'county', 'zip', 'state']).optional(),
         date_from: z.string().optional(),
         date_to: z.string().optional(),
         property_type: z.string().optional().describe("Default 'commercial'"),

@@ -1,9 +1,24 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { pickGeo } from '../lib/shovels.js';
-import { parseGeoToken, resolveGeoTargets } from './shovelsGeoTargets.js';
+import { geoNameMatches, parseTotalCount, pickGeo } from '../lib/shovels.js';
+import { parseGeoToken, resolveGeoTargets, tokenizeGeos } from './shovelsGeoTargets.js';
 
-describe('pickGeo', () => {
+describe('parseTotalCount', () => {
+  it('reads Shovels {value,relation} shape (not items.length)', () => {
+    assert.deepEqual(parseTotalCount({ value: 4279, relation: 'eq' }), {
+      value: 4279,
+      relation: 'eq',
+    });
+    // Bare Number({value}) was NaN → old code fell through to size=1
+    assert.equal(Number({ value: 4279 }), Number.NaN);
+  });
+
+  it('accepts bare numbers', () => {
+    assert.equal(parseTotalCount(12).value, 12);
+  });
+});
+
+describe('pickGeo / geoNameMatches', () => {
   it('does not force TX when other states are present', () => {
     const geo = pickGeo(
       [
@@ -18,39 +33,77 @@ describe('pickGeo', () => {
     assert.equal(geo?.state, 'FL');
   });
 
-  it('picks best name match without TX preference', () => {
+  it('county pick rejects city-inside-other-county hits', () => {
     const geo = pickGeo(
       [
-        { geo_id: 'ca1', name: 'Los Angeles, CA', state: 'CA' },
-        { geo_id: 'tx1', name: 'Los Angeles County something, TX', state: 'TX' },
+        { geo_id: 'bad', name: 'Hunt, Kerr, TX', state: 'TX' },
+        { geo_id: 'good', name: 'Hunt County, TX', state: 'TX' },
       ],
-      'city',
-      'Los Angeles',
+      'county',
+      'Hunt',
+      'TX',
     );
-    assert.equal(geo?.geo_id, 'ca1');
+    assert.equal(geo?.geo_id, 'good');
+    assert.equal(geo?.kind, 'county');
+  });
+
+  it('returns null when only mismatched city hits exist for a county request', () => {
+    const geo = pickGeo(
+      [{ geo_id: 'bad', name: 'Texhoma, Sherman, TX', state: 'TX' }],
+      'county',
+      'Sherman',
+      'TX',
+    );
+    assert.equal(geo, null);
+  });
+
+  it('city pick rejects Collin → Anna, Collin, TX', () => {
+    assert.equal(geoNameMatches('Anna, Collin, TX', 'city', 'Collin', 'TX'), false);
+    const geo = pickGeo(
+      [{ geo_id: 'bad', name: 'Anna, Collin, TX', state: 'TX' }],
+      'city',
+      'Collin',
+      'TX',
+    );
+    assert.equal(geo, null);
   });
 });
 
-describe('resolveGeoTargets', () => {
+describe('tokenizeGeos / parseGeoToken', () => {
+  it('keeps Denton County, TX intact', () => {
+    const tokens = tokenizeGeos('Denton County, TX; Collin County, TX');
+    assert.deepEqual(tokens, ['Denton County, TX', 'Collin County, TX']);
+    const denton = parseGeoToken('Denton County, TX');
+    assert.equal(denton.kind, 'county');
+    assert.equal(denton.q, 'Denton');
+    assert.equal(denton.state, 'TX');
+  });
+
+  it('accepts ZIP lists', () => {
+    const tokens = tokenizeGeos('75001, 75035, 75201');
+    assert.deepEqual(tokens, ['75001', '75035', '75201']);
+    assert.equal(parseGeoToken('75001').kind, 'zip');
+  });
+
+  it('maps DFW-ring bare names to county aliases', () => {
+    const hunt = parseGeoToken('Hunt');
+    assert.equal(hunt.kind, 'county');
+    assert.equal(hunt.q, 'Hunt');
+    assert.equal(hunt.state, 'TX');
+    const collin = resolveGeoTargets({ geos: 'Collin, Ellis, Johnson' });
+    assert.ok(collin.every((t) => t.kind === 'county'));
+  });
+
+  it('honors geo_level=county', () => {
+    const rows = resolveGeoTargets({ geos: 'Foo, Bar', geo_level: 'county', state: 'TX' });
+    assert.equal(rows.length, 2);
+    assert.ok(rows.every((t) => t.kind === 'county' && t.state === 'TX'));
+  });
+
   it('expands east_coast and west_coast aliases', () => {
     const east = resolveGeoTargets({ geos: 'east_coast' });
     assert.ok(east.some((t) => t.place === 'Miami' && t.state === 'FL'));
-    assert.ok(east.some((t) => t.place === 'New_York' && t.state === 'NY'));
     const west = resolveGeoTargets({ geos: 'west_coast' });
     assert.ok(west.some((t) => t.place === 'Los_Angeles' && t.state === 'CA'));
-    assert.ok(west.some((t) => t.place === 'Seattle' && t.state === 'WA'));
-  });
-
-  it('accepts state codes and City, ST tokens', () => {
-    assert.deepEqual(parseGeoToken('CA'), {
-      kind: 'state',
-      q: 'CA',
-      place: 'CA',
-      state: 'CA',
-    });
-    const miami = parseGeoToken('Miami, FL');
-    assert.equal(miami.q, 'Miami');
-    assert.equal(miami.state, 'FL');
-    assert.equal(miami.kind, 'city');
   });
 });

@@ -17,11 +17,13 @@ This server is **not** a people-resolver. It surfaces public permit + parcel rec
 
 ## Geography (critical — Cayden)
 - Cayden may search **whenever he wants, anywhere in the US**. There is **no timezone gate** and **no Texas-only filter** on live Shovels tools.
-- East coast → \`geos=east_coast\` (Miami, Atlanta, Charlotte, NYC, Boston, Philly, DC).
-- West coast → \`geos=west_coast\` (LA, SF, San Diego, Seattle, Portland).
-- Or pass a city (\`Miami\`, \`Los Angeles, CA\`), county, or state code (\`CA\`, \`FL\`).
-- Flow: \`shovels_estimate_credits\` or \`shovels_pull_calling_list\` without \`confirm\` → show both credit meters → \`shovels_pull_calling_list(confirm=true)\`.
+- **Counties:** pass \`"Denton County, TX; Collin County, TX"\` (semicolons) or \`geo_level=county\`. Bare DFW-ring names (Hunt, Collin, …) map to counties — never to a random city inside another county.
+- **ZIPs:** \`"75001;75035;75201"\` resolve as geo_ids directly (unambiguous escape hatch).
+- **resolve_only=true** on \`shovels_estimate_credits\` maps geos with **0 probe credits** — use before a long county list.
+- East coast → \`geos=east_coast\`. West coast → \`geos=west_coast\`.
+- Flow: resolve_only → show resolved_name/kind → estimate → \`shovels_pull_calling_list(confirm=true)\`.
 - DFW file cache remains free; do **not** refuse non-DFW requests or tell him to only use CSV.
+- A \`coverage=no_coverage\` / \`total_count=0\` after a **correct** county resolve is a valid answer (thin Shovels coverage), not a geo bug.
 
 ## Supabase target (critical)
 - Every \`health\` and \`sync_to_supabase\` / \`save_calling_list\` response includes \`supabase_project\` + \`supabase_schema\`.

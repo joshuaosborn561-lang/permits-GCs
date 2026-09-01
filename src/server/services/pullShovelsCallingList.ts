@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { nationalChainHit } from '../lib/nationalChain.js';
 import {
+  GeoResolutionError,
   hasShovelsApi,
   pullContractorsForGeo,
   resolveShovelsGeo,
   type ShovelsApiContractor,
+  type ShovelsGeo,
 } from '../lib/shovels.js';
 import { supabaseTargetMeta } from '../lib/supabaseTarget.js';
 import { hasSupabase, SCHEMA } from '../lib/supabase.js';
 import { upsertCallingListMeta } from './callingLists.js';
-import { resolveGeoTargets } from './shovelsGeoTargets.js';
+import { resolveGeoTargets, type GeoLevelHint, type GeoTarget } from './shovelsGeoTargets.js';
 import { estimateShovelsCredits } from './shovelsCredits.js';
 import { contractorsToCsv, type ShovelsContractor } from './shovelsContractors.js';
 import { replaceLeads, upsertExport, upsertJob } from './syncToSupabase.js';
@@ -22,6 +24,7 @@ export interface PullShovelsCallingListInput {
   place?: string;
   city?: string;
   state?: string;
+  geo_level?: GeoLevelHint;
   date_from?: string;
   date_to?: string;
   property_type?: string;
@@ -131,6 +134,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       place: opts.place,
       city: opts.city,
       state: opts.state,
+      geo_level: opts.geo_level,
       date_from: window.date_from,
       date_to: window.date_to,
       property_type: propertyType,
@@ -148,12 +152,44 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       owner,
       estimate,
       assistant_instructions:
-        'Show BOTH free_tier_pages and paid_tier_companies. There is NO timezone or TX-only restriction — East/West coast and any US city/county/state work. Re-call shovels_pull_calling_list with the same geos and confirm=true to spend credits and write the calling list. Prefer exclude_national_chains=true and has_phone=true when Cayden wants dialable locals.',
+        'Show resolution (resolved_name / resolved_kind) AND both credit meters. Fix any resolution_failed rows before confirm=true. Prefer "County, ST" or ZIPs for outer-ring DFW. Prefer exclude_national_chains=true and has_phone=true.',
     };
   }
 
   if (!hasSupabase()) {
     return { ok: false, error: 'Supabase not configured', ...supabaseTargetMeta() };
+  }
+
+  // Resolve ALL geos first — never pull (spend) on a bad match.
+  const resolved: Array<{ target: GeoTarget; geo: ShovelsGeo }> = [];
+  const resolutionErrors: Array<Record<string, unknown>> = [];
+  for (const t of targets) {
+    try {
+      const geo = await resolveShovelsGeo({ kind: t.kind, q: t.q, state: t.state });
+      resolved.push({ target: t, geo });
+    } catch (err) {
+      resolutionErrors.push({
+        requested: t,
+        error: err instanceof Error ? err.message : String(err),
+        detail: err instanceof GeoResolutionError ? { requested: err.requested, resolved: err.resolved } : null,
+      });
+    }
+  }
+  if (resolutionErrors.length) {
+    return {
+      ok: false,
+      error: `${resolutionErrors.length} geo(s) failed resolution — no pull credits spent`,
+      resolution_errors: resolutionErrors,
+      resolved_ok: resolved.map((r) => ({
+        requested: r.target,
+        resolved_geo_id: r.geo.geo_id,
+        resolved_name: r.geo.name,
+        resolved_kind: r.geo.kind,
+      })),
+      ...supabaseTargetMeta(),
+      assistant_instructions:
+        'Fix failed geos (use "Denton County, TX", geo_level=county, or ZIPs). Re-run. No contractor pages were fetched.',
+    };
   }
 
   const byId = new Map<string, ShovelsApiContractor>();
@@ -162,17 +198,12 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
   let creditsSpent = 0;
   let anyTruncated = false;
 
-  for (const t of targets) {
+  for (const { target: t, geo } of resolved) {
     const remaining = maxRecords - byId.size;
     if (remaining <= 0) {
       anyTruncated = true;
       break;
     }
-    const geo = await resolveShovelsGeo({
-      kind: t.kind,
-      q: t.q,
-      state: t.state,
-    });
     const pulled = await pullContractorsForGeo({
       geo,
       place: t.place,
@@ -263,6 +294,7 @@ export async function pullShovelsCallingList(opts: PullShovelsCallingListInput =
       place: opts.place ?? null,
       city: opts.city ?? null,
       state: opts.state ?? null,
+      geo_level: opts.geo_level ?? 'auto',
       targets,
       window,
       property_type: propertyType,

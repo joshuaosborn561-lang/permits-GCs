@@ -10,17 +10,21 @@ const US_STATES = new Set([
   'WV', 'WI', 'WY',
 ]);
 
+export type GeoKind = 'city' | 'county' | 'state' | 'zip';
+
 export interface ShovelsHeaders {
   credits_request: number | null;
   credits_limit: number | null;
   credits_remaining: number | null;
+  /** Raw header dump for debugging when credit fields are missing. */
+  raw?: Record<string, string>;
 }
 
 export interface ShovelsGeo {
   geo_id: string;
   name: string;
   state?: string;
-  kind: 'city' | 'county' | 'state';
+  kind: GeoKind;
 }
 
 export interface ContractorCountProbe {
@@ -29,6 +33,8 @@ export interface ContractorCountProbe {
   count_relation: string | null;
   items_on_probe: number;
   headers: ShovelsHeaders;
+  /** True when Shovels returned no usable count (possible thin/no coverage). */
+  no_coverage: boolean;
 }
 
 export interface ShovelsApiContractor {
@@ -54,18 +60,38 @@ export interface ShovelsApiContractor {
   business_type: string | null;
 }
 
-function headerNum(res: Response, name: string): number | null {
-  const raw = res.headers.get(name);
-  if (raw == null || raw === '') return null;
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : null;
+export class GeoResolutionError extends Error {
+  requested: Record<string, unknown>;
+  resolved: Record<string, unknown> | null;
+
+  constructor(message: string, requested: Record<string, unknown>, resolved: Record<string, unknown> | null = null) {
+    super(message);
+    this.name = 'GeoResolutionError';
+    this.requested = requested;
+    this.resolved = resolved;
+  }
+}
+
+function headerNum(res: Response, ...names: string[]): number | null {
+  for (const name of names) {
+    const raw = res.headers.get(name);
+    if (raw == null || raw === '') continue;
+    const n = Number(raw);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
 }
 
 function creditHeaders(res: Response): ShovelsHeaders {
+  const raw: Record<string, string> = {};
+  res.headers.forEach((v, k) => {
+    if (/credit/i.test(k) || /x-/i.test(k)) raw[k] = v;
+  });
   return {
-    credits_request: headerNum(res, 'x-credits-request'),
-    credits_limit: headerNum(res, 'x-credits-limit'),
-    credits_remaining: headerNum(res, 'x-credits-remaining'),
+    credits_request: headerNum(res, 'x-credits-request', 'x-credit-request', 'credits-request'),
+    credits_limit: headerNum(res, 'x-credits-limit', 'x-credit-limit', 'credits-limit'),
+    credits_remaining: headerNum(res, 'x-credits-remaining', 'x-credit-remaining', 'credits-remaining'),
+    raw: Object.keys(raw).length ? raw : undefined,
   };
 }
 
@@ -110,18 +136,107 @@ async function shovelsGet(path: string, query: Record<string, string | number | 
 export async function getShovelsUsage(): Promise<Record<string, unknown> | null> {
   if (!hasShovelsApi()) return null;
   const { body, headers } = await shovelsGet('/usage', {});
-  return { ...(body as Record<string, unknown>), headers };
+  const rec = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const used = Number(rec.credits_used ?? rec.used ?? NaN);
+  const limit = Number(rec.credit_limit ?? rec.credits_limit ?? headers.credits_limit ?? NaN);
+  const remaining =
+    headers.credits_remaining != null
+      ? headers.credits_remaining
+      : Number.isFinite(used) && Number.isFinite(limit)
+        ? Math.max(0, limit - used)
+        : null;
+  return {
+    ...rec,
+    credits_used: Number.isFinite(used) ? used : null,
+    credits_remaining: remaining,
+    credits_limit: Number.isFinite(limit) ? limit : headers.credits_limit,
+    headers,
+  };
 }
 
-/** Prefer requested state when given; never force TX. Nationwide OK. */
+/** Shovels returns total_count as `{ value, relation }` — not a bare number. */
+export function parseTotalCount(raw: unknown): { value: number; relation: string | null } {
+  if (raw == null) return { value: 0, relation: null };
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return { value: raw, relation: 'eq' };
+  }
+  if (typeof raw === 'object') {
+    const obj = raw as { value?: unknown; relation?: unknown; count?: unknown };
+    if (obj.value != null) {
+      const v = Number(obj.value);
+      return {
+        value: Number.isFinite(v) ? v : 0,
+        relation: obj.relation != null ? String(obj.relation) : 'eq',
+      };
+    }
+    if (obj.count != null) {
+      const v = Number(obj.count);
+      return { value: Number.isFinite(v) ? v : 0, relation: 'eq' };
+    }
+  }
+  if (typeof raw === 'string' && /^\d+$/.test(raw)) {
+    return { value: Number(raw), relation: 'eq' };
+  }
+  return { value: 0, relation: null };
+}
+
+function norm(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** True when resolved name is a legitimate match for the requested needle+kind. */
+export function geoNameMatches(
+  resolvedName: string,
+  kind: GeoKind,
+  needle: string,
+  state?: string,
+): boolean {
+  const name = norm(resolvedName);
+  const want = norm(needle);
+  if (!want) return false;
+  const st = state?.trim().toUpperCase();
+
+  if (kind === 'zip') {
+    const digits = want.replace(/\D/g, '').slice(0, 5);
+    return resolvedName.replace(/\D/g, '').startsWith(digits) || name.includes(digits);
+  }
+  if (kind === 'state') {
+    return name === want || name.startsWith(`${want},`) || name === want.toLowerCase();
+  }
+  if (kind === 'county') {
+    // Accept "Denton County, TX" or "Denton County"
+    const countyForm = `${want} county`;
+    if (!(name === countyForm || name.startsWith(`${countyForm},`) || name.startsWith(`${countyForm} `))) {
+      // Also allow exact "Denton, TX" only if the API labels it as county in the name
+      if (!(/\bcounty\b/.test(name) && (name.startsWith(`${want},`) || name.startsWith(`${want} `)))) {
+        return false;
+      }
+    }
+    if (st && !name.includes(`, ${st.toLowerCase()}`) && !name.endsWith(` ${st.toLowerCase()}`)) {
+      // state field may still match even if name omits it
+      return true; // state checked separately via item.state
+    }
+    return true;
+  }
+  // city: first segment must equal the needle (rejects "Anna, Collin, TX" for needle "Collin")
+  const first = name.split(',')[0]?.trim() || '';
+  if (first === want) return true;
+  if (first.startsWith(`${want} `)) return true; // "San Antonio"
+  return false;
+}
+
+/**
+ * Pick a geo from search hits. Never returns a mismatched city for a county
+ * request (e.g. Hunt → Hunt, Kerr, TX when asking for Hunt County).
+ */
 export function pickGeo(
   items: Array<{ geo_id?: string; name?: string; state?: string }>,
-  kind: 'city' | 'county',
+  kind: 'city' | 'county' | 'zip',
   needle: string,
   state?: string,
 ): ShovelsGeo | null {
   if (!items.length) return null;
-  const want = needle.toLowerCase().trim();
+  const want = norm(needle);
   const wantState = state?.trim().toUpperCase() || null;
 
   let pool = items;
@@ -134,13 +249,35 @@ export function pickGeo(
     if (filtered.length) pool = filtered;
   }
 
-  const nameOf = (i: { name?: string }) => (i.name || '').toLowerCase();
-  const exact =
-    pool.find((i) => nameOf(i) === want) ||
-    pool.find((i) => nameOf(i).startsWith(`${want},`)) ||
-    pool.find((i) => nameOf(i).includes(want));
-  const hit = exact || pool[0];
+  const nameOf = (i: { name?: string }) => norm(i.name || '');
+
+  let hit: (typeof items)[number] | undefined;
+  if (kind === 'county') {
+    hit =
+      pool.find((i) => nameOf(i) === `${want} county`) ||
+      pool.find((i) => nameOf(i) === `${want} county, ${wantState?.toLowerCase() || ''}`) ||
+      pool.find((i) => nameOf(i).startsWith(`${want} county,`)) ||
+      pool.find((i) => nameOf(i).startsWith(`${want} county`)) ||
+      pool.find((i) => /\bcounty\b/.test(nameOf(i)) && geoNameMatches(i.name || '', 'county', needle, state));
+  } else if (kind === 'zip') {
+    const digits = needle.replace(/\D/g, '').slice(0, 5);
+    hit =
+      pool.find((i) => i.geo_id === digits || i.geo_id === needle) ||
+      pool.find((i) => (i.name || '').replace(/\D/g, '').startsWith(digits));
+  } else {
+    hit =
+      pool.find((i) => nameOf(i) === want) ||
+      (wantState
+        ? pool.find((i) => nameOf(i) === `${want}, ${wantState.toLowerCase()}`)
+        : undefined) ||
+      pool.find((i) => nameOf(i).startsWith(`${want},`)) ||
+      pool.find((i) => geoNameMatches(i.name || '', 'city', needle, state));
+  }
+
   if (!hit?.geo_id) return null;
+  if (!geoNameMatches(hit.name || '', kind, needle, state ?? hit.state)) {
+    return null;
+  }
   return {
     geo_id: hit.geo_id,
     name: hit.name || needle,
@@ -150,27 +287,70 @@ export function pickGeo(
 }
 
 export async function resolveShovelsGeo(opts: {
-  kind: 'city' | 'county' | 'state';
+  kind: GeoKind;
   q: string;
   /** Optional 2-letter state to disambiguate city/county names nationwide. */
   state?: string;
 }): Promise<ShovelsGeo> {
   const q = opts.q.trim();
-  if (!q) throw new Error('Empty Shovels geo query');
+  if (!q) throw new GeoResolutionError('Empty Shovels geo query', { ...opts });
 
   const asState = q.toUpperCase();
-  if (opts.kind === 'state' || (q.length === 2 && US_STATES.has(asState))) {
-    if (!US_STATES.has(asState)) throw new Error(`Unknown US state code "${q}"`);
+  if (opts.kind === 'state' || (opts.kind !== 'zip' && q.length === 2 && US_STATES.has(asState))) {
+    if (!US_STATES.has(asState)) {
+      throw new GeoResolutionError(`Unknown US state code "${q}"`, { ...opts });
+    }
     return { geo_id: asState, name: asState, state: asState, kind: 'state' };
   }
 
-  const path = opts.kind === 'city' ? '/cities/search' : '/counties/search';
-  const { body } = await shovelsGet(path, { q });
+  // ZIPs are valid geo_ids directly (docs); skip search to avoid burning credits.
+  if (opts.kind === 'zip' || /^\d{5}(-\d{4})?$/.test(q)) {
+    const zip = q.replace(/\D/g, '').slice(0, 5);
+    if (!/^\d{5}$/.test(zip)) {
+      throw new GeoResolutionError(`Invalid ZIP "${q}"`, { ...opts });
+    }
+    return { geo_id: zip, name: zip, state: opts.state, kind: 'zip' };
+  }
+
+  const path =
+    opts.kind === 'county' ? '/counties/search' : opts.kind === 'city' ? '/cities/search' : '/cities/search';
+
+  let body: unknown;
+  try {
+    ({ body } = await shovelsGet(path, { q }));
+  } catch (err) {
+    throw new GeoResolutionError(
+      err instanceof Error ? err.message : String(err),
+      { kind: opts.kind, q, state: opts.state },
+    );
+  }
+
   const items = Array.isArray((body as { items?: unknown[] })?.items)
     ? ((body as { items: Array<{ geo_id?: string; name?: string; state?: string }> }).items)
     : [];
-  const geo = pickGeo(items, opts.kind === 'county' ? 'county' : 'city', q, opts.state);
-  if (!geo) throw new Error(`No Shovels ${opts.kind} geo for "${q}"${opts.state ? ` (${opts.state})` : ''}`);
+
+  const pickKind = opts.kind === 'county' ? 'county' : 'city';
+  const geo = pickGeo(items, pickKind, q, opts.state);
+
+  if (!geo) {
+    const top = items.slice(0, 3).map((i) => i.name).filter(Boolean);
+    throw new GeoResolutionError(
+      `No Shovels ${opts.kind} match for "${q}"${opts.state ? ` (${opts.state})` : ''}` +
+        (top.length ? ` — top hits were: ${top.join(' | ')}` : ' — empty search result') +
+        `. Refusing to probe. Pass an explicit level (e.g. "${q} County, ${opts.state || 'TX'}" or geo_level=county).`,
+      { kind: opts.kind, q, state: opts.state },
+      top.length ? { top_hits: top } : null,
+    );
+  }
+
+  if (!geoNameMatches(geo.name, geo.kind, q, opts.state ?? geo.state)) {
+    throw new GeoResolutionError(
+      `Requested ${opts.kind} "${q}" resolved to "${geo.name}" (${geo.geo_id}) — mismatch, refusing to probe`,
+      { kind: opts.kind, q, state: opts.state },
+      { resolved_geo_id: geo.geo_id, resolved_name: geo.name, resolved_kind: geo.kind, resolved_state: geo.state },
+    );
+  }
+
   return geo;
 }
 
@@ -190,20 +370,24 @@ export async function probeContractorCount(opts: {
     size: 1,
   });
   const rec = body as {
-    total_count?: number;
-    count?: number;
+    total_count?: unknown;
+    count?: unknown;
     count_relation?: string;
     items?: unknown[];
   };
-  const total =
-    Number(rec.total_count ?? rec.count ?? 0) ||
-    (Array.isArray(rec.items) ? rec.items.length : 0);
+  const parsed = parseTotalCount(rec.total_count ?? rec.count);
+  // Never fall back to items.length — size=1 would report "1 contractor" for every geo.
+  const total = parsed.value;
+  const relation =
+    parsed.relation ??
+    (typeof rec.count_relation === 'string' ? rec.count_relation : null);
   return {
     geo: opts.geo,
     total_count: total,
-    count_relation: rec.count_relation ?? (rec.total_count != null ? 'eq' : null),
+    count_relation: relation,
     items_on_probe: Array.isArray(rec.items) ? rec.items.length : 0,
     headers,
+    no_coverage: total === 0,
   };
 }
 
@@ -257,7 +441,6 @@ export async function pullContractorsForGeo(opts: {
   property_type?: string;
   page_size?: number;
   max_records?: number;
-  /** Stop after this many pages even if more remain. */
   max_pages?: number;
 }): Promise<{
   items: ShovelsApiContractor[];
