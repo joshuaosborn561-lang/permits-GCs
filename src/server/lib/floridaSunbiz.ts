@@ -129,8 +129,26 @@ export function looksLikeCloudflareChallenge(status: number, body: string): bool
   );
 }
 
+/**
+ * Drop contractor license numbers that permit systems glue onto company names:
+ * `(CAC053821) AIR AROUND THE CLOCK`, `RCC ASSOCIATES INC [CGC017738]`,
+ * `PINNACLE PLUMBING INC - CFC057845`.
+ *
+ * Sunbiz entity search is an alphabetical browse, not a keyword match, so a
+ * leading `(CAC053821)` lands the browse among `CAC…` names and the real entity
+ * never appears in the 20 results.
+ */
+export function stripLicenseTokens(name: string): string {
+  return name
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\(\s*[A-Z]{1,4}[-\s]?\d[\w-]*\s*\)/gi, ' ')
+    .replace(/\s+-\s*[A-Z]{2,4}\d{4,}\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function cleanSearchTerm(name: string): string {
-  return name.replace(/\s+/g, ' ').trim().slice(0, SEARCH_TERM_MAX);
+  return stripLicenseTokens(name).slice(0, SEARCH_TERM_MAX);
 }
 
 export function companyKey(s: string): string {
@@ -732,8 +750,10 @@ export async function prepareFloridaSunbizRun(): Promise<{
   return { key_status: runKeyStatus, api_usable: Boolean(sosKey()) && !apiRejected };
 }
 
-export async function searchSunbizEntities(name: string): Promise<SunbizSearchHit[]> {
+export async function searchSunbizEntities(rawName: string): Promise<SunbizSearchHit[]> {
   await loadAppSettings();
+  // Rank against the stripped name too, so a license number can't cost score.
+  const name = stripLicenseTokens(rawName);
   const q = cleanSearchTerm(name);
   if (q.length < 2) return [];
 
