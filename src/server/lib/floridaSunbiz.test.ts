@@ -17,6 +17,7 @@ import {
   resetFloridaSunbizSource,
   searchSunbizEntities,
   setFloridaSunbizFetch,
+  stripLicenseTokens,
 } from './floridaSunbiz.js';
 
 const SEARCH_HTML = `
@@ -81,6 +82,48 @@ afterEach(async () => {
   setFloridaSunbizFetch(null);
   resetFloridaSunbizSource();
   await clearAppSetting({ key: 'florida_sos_api_key', set_by: 'test' });
+});
+
+describe('stripLicenseTokens', () => {
+  it('drops a leading parenthesised license number', () => {
+    assert.equal(stripLicenseTokens('(CAC053821) AIR AROUND THE CLOCK'), 'AIR AROUND THE CLOCK');
+  });
+
+  it('drops a bracketed license number', () => {
+    assert.equal(stripLicenseTokens('RCC ASSOCIATES INC [CGC017738]'), 'RCC ASSOCIATES INC');
+  });
+
+  it('drops a dash-separated trailing license number', () => {
+    assert.equal(stripLicenseTokens('PINNACLE PLUMBING INC - CFC057845'), 'PINNACLE PLUMBING INC');
+  });
+
+  it('drops dashed municipal registration numbers', () => {
+    assert.equal(stripLicenseTokens('AirCo Ltd (MC-314-23)'), 'AirCo Ltd');
+  });
+
+  it('leaves plain names and non-numeric parentheticals alone', () => {
+    assert.equal(stripLicenseTokens('TAMPA ROOFING COMPANY'), 'TAMPA ROOFING COMPANY');
+    assert.equal(stripLicenseTokens('AAA AUGER (IRVING)'), 'AAA AUGER (IRVING)');
+    assert.equal(stripLicenseTokens('A-US AIR CONDITIONING OF TEXAS'), 'A-US AIR CONDITIONING OF TEXAS');
+  });
+});
+
+describe('searchSunbizEntities license-number names', { concurrency: false }, () => {
+  afterEach(() => {
+    setFloridaSunbizFetch(null);
+    resetFloridaSunbizSource();
+  });
+
+  it('searches Sunbiz with the license number stripped', async () => {
+    let searched = '';
+    setFloridaSunbizFetch(async (input) => {
+      searched = new URL(String(input)).searchParams.get('searchTerm') || '';
+      return new Response(SEARCH_HTML, { status: 200, headers: { 'content-type': 'text/html' } });
+    });
+    const hits = await searchSunbizEntities('(CGC1525037) TAMPA ROOFING COMPANY');
+    assert.equal(searched, 'TAMPA ROOFING COMPANY');
+    assert.equal(hits[0]?.document_number, '302224');
+  });
 });
 
 describe('normalizeSunbizPersonName', () => {
